@@ -469,6 +469,40 @@ export default function VerdictReport() {
                     strong
                   />
 
+                  {extraction.gstin && (
+                    <Fact
+                      label="GSTIN"
+                      value={extraction.gstin}
+                      mono
+                      strong
+                    />
+                  )}
+
+                  {extraction.pan && (
+                    <Fact
+                      label="PAN"
+                      value={extraction.pan}
+                      mono
+                    />
+                  )}
+
+                  {extraction.bank_account && (
+                    <Fact
+                      label="Bank Account"
+                      value={extraction.bank_account}
+                      mono
+                    />
+                  )}
+
+                  {(extraction.ifsc_code || extraction.bank_routing) && (
+                    <Fact
+                      label="IFSC / Routing"
+                      value={extraction.ifsc_code || extraction.bank_routing || ""}
+                      mono
+                      strong
+                    />
+                  )}
+
                   <Fact
                     label="OCR engine"
                     value={extraction.ocr_engine}

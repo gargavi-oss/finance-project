@@ -213,8 +213,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .sidebar-system dd { margin: 0; font: 600 9px "JetBrains Mono", monospace; }
 .sidebar-user { display: grid; grid-template-columns: 36px 1fr 28px; align-items: center; gap: 10px; padding: 16px 6px 0; }
 .avatar { width: 36px; height: 36px; border-radius: 50%; background: #d98971; color: #fff; display: grid !important; place-items: center; font: 800 11px "JetBrains Mono", monospace; }
-.sidebar-user button { border: 0; background: transparent; color: #a9beb5; padding: 5px; }
-.sidebar-user svg { width: 18px; }
+.sidebar-user button { border: 0; background: transparent; color: #a9beb5; padding: 6px; cursor: pointer; display: grid; place-items: center; border-radius: 6px; transition: color 150ms ease, background 150ms ease; }
+.sidebar-user button:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
+.sidebar-user svg { width: 18px; height: 18px; }
 .app-stage { min-width: 0; display: flex; flex-direction: column; min-height: 100dvh; }
 .app-topbar { min-height: 98px; padding: 20px clamp(22px, 4vw, 54px); display: flex; justify-content: space-between; align-items: center; gap: 30px; border-bottom: 1px solid var(--line); background: rgba(244,241,233,.93); backdrop-filter: blur(12px); position: sticky; top: 0; z-index: 20; }
 .topbar-kicker { color: var(--coral); font: 700 9px "JetBrains Mono", monospace; letter-spacing: .15em; text-transform: uppercase; }

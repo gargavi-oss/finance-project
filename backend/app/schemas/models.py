@@ -74,13 +74,16 @@ class ExtractionResult(BaseModel):
     invoice_number: Optional[str] = None
     invoice_date: Optional[str] = None
     total_amount: Optional[float] = None
-    currency: str = "USD"
+    currency: str = "INR"
     line_items: list[ExtractedLineItem] = Field(default_factory=list)
     raw_text: str = ""
     ocr_engine: str = "tesseract"
     confidence: float = 0.0
     bank_account: Optional[str] = None
     bank_routing: Optional[str] = None
+    gstin: Optional[str] = None
+    pan: Optional[str] = None
+    ifsc_code: Optional[str] = None
     flagged_regions: list[BoundingBox] = Field(default_factory=list)
     # Schema / business-rule validation (AWS IDP "blueprint" analogue).
     completeness: Optional["CompletenessResult"] = None
@@ -320,6 +323,9 @@ class DocumentRecord(BaseModel):
     total_amount: Optional[float] = None
     bank_account: Optional[str] = None
     bank_routing: Optional[str] = None
+    gstin: Optional[str] = None
+    pan: Optional[str] = None
+    ifsc_code: Optional[str] = None
     decision: DocumentDecision = DocumentDecision.PENDING
     risk_score: Optional[int] = None
     summary: Optional[str] = None

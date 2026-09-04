@@ -76,8 +76,8 @@ async def vendor_history(
                 label="Amount spike",
                 severity=Severity.HIGH,
                 detail=(
-                    f"${amount:,.2f} is {amount / max(avg, 1):.1f}× the vendor's "
-                    f"average of ${avg:,.2f} (n={n}, std=${std:,.2f})."
+                    f"₹{amount:,.2f} is {amount / max(avg, 1):.1f}× the vendor's "
+                    f"average of ₹{avg:,.2f} (n={n}, std=₹{std:,.2f})."
                 ),
                 score=0.8,
             )
@@ -85,15 +85,15 @@ async def vendor_history(
         score = max(score, 0.8)
 
     # Single unusually-large submission
-    if amount > 1.5 * mx and amount > 500:
+    if amount > 1.5 * mx and amount > 10000:
         flags.append(
             HistoryFlag(
                 code="largest_submission",
                 label="Largest-ever submission",
                 severity=Severity.MEDIUM,
                 detail=(
-                    f"Amount ${amount:,.2f} is {(amount / max(mx, 1)):.1f}× the "
-                    f"vendor's previous max of ${mx:,.2f}."
+                    f"Amount ₹{amount:,.2f} is {(amount / max(mx, 1)):.1f}× the "
+                    f"vendor's previous max of ₹{mx:,.2f}."
                 ),
                 score=0.55,
             )
@@ -110,7 +110,7 @@ async def vendor_history(
                     label="Recent frequency spike",
                     severity=Severity.MEDIUM,
                     detail=f"3 most-recent submissions for this vendor average "
-                    f"${sum(last_3) / 3:,.2f}; this one is ${amount:,.2f}.",
+                    f"₹{sum(last_3) / 3:,.2f}; this one is ₹{amount:,.2f}.",
                     score=0.5,
                 )
             )

@@ -44,12 +44,13 @@ export const AGENT_DISPLAY: Record<string, { label: string; subtitle: string }> 
 
 export const AGENT_ORDER = ["extraction", "forensics", "policy", "history", "ring", "verdict"] as const;
 
-export function fmtCurrency(n: number | null | undefined, currency = "USD"): string {
+export function fmtCurrency(n: number | null | undefined, currency = "INR"): string {
   if (n === null || n === undefined) return "—";
+  const curr = !currency || currency === "USD" ? "INR" : currency;
   try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
+    return new Intl.NumberFormat("en-IN", { style: "currency", currency: curr, maximumFractionDigits: 2 }).format(n);
   } catch {
-    return `$${n.toFixed(2)}`;
+    return `₹${n.toFixed(2)}`;
   }
 }
 

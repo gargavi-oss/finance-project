@@ -32,8 +32,11 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => { setMobileOpen(false); setSearchOpen(false); }, [location.pathname]);
 
   async function signOut() {
-    await logout();
-    navigate("/");
+    try {
+      await logout();
+    } finally {
+      navigate("/");
+    }
   }
 
   return (
@@ -43,8 +46,8 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       <aside className={`app-sidebar ${mobileOpen ? "is-open" : ""}`}>
         <div className="sidebar-brand"><Brand inverted to="/app/live" /><button className="mobile-close" onClick={() => setMobileOpen(false)}>×</button></div>
         <div className="workspace-selector">
-          <span className="workspace-symbol">NX</span>
-          <div><strong>Nexora Finance</strong><small>Production workspace</small></div>
+          <span className="workspace-symbol">🇮🇳</span>
+          <div><strong>Nexora Finance India</strong><small>India Compliance · INR (₹)</small></div>
           <span className="chevron">⌄</span>
         </div>
         <nav className="sidebar-nav" aria-label="Application navigation">
@@ -62,7 +65,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
         <div className="sidebar-user">
           <div className="avatar">{initials(user?.name)}</div>
           <div><strong>{user?.name}</strong><small>{user?.role}</small></div>
-          <button onClick={signOut} aria-label="Sign out" title="Sign out"><LogoutIcon /></button>
+          <button type="button" className="logout-button" onClick={signOut} aria-label="Sign out" title="Sign out"><LogoutIcon /></button>
         </div>
       </aside>
 

@@ -178,7 +178,6 @@ async def me(docforensic_session: str | None = Cookie(default=None)) -> UserResp
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
-    response: Response,
     docforensic_session: str | None = Cookie(default=None),
 ) -> Response:
     if docforensic_session:
@@ -189,5 +188,6 @@ async def logout(
                 )
             )
             await session.commit()
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
     response.delete_cookie(SESSION_COOKIE, path="/")
     return response

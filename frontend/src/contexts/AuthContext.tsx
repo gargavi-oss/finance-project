@@ -25,8 +25,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     login: async (email, password) => setUser(await apiLogin(email, password)),
     signup: async (name, email, password) => setUser(await apiSignup(name, email, password)),
     logout: async () => {
-      await apiLogout();
-      setUser(null);
+      try {
+        await apiLogout();
+      } catch {
+        // Clear local state even if network call fails
+      } finally {
+        setUser(null);
+      }
     },
   }), [loading, user]);
 

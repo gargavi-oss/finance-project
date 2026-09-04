@@ -34,6 +34,11 @@ export interface DocumentRecord {
   invoice_number: string | null;
   invoice_date: string | null;
   total_amount: number | null;
+  bank_account?: string | null;
+  bank_routing?: string | null;
+  gstin?: string | null;
+  pan?: string | null;
+  ifsc_code?: string | null;
   decision: "approved" | "escalated" | "rejected" | "pending";
   risk_score: number | null;
   summary: string | null;
@@ -63,6 +68,11 @@ export interface Extraction {
   raw_text: string;
   ocr_engine: string;
   confidence: number;
+  bank_account?: string | null;
+  bank_routing?: string | null;
+  gstin?: string | null;
+  pan?: string | null;
+  ifsc_code?: string | null;
 }
 
 export interface TamperHotspot {

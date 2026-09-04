@@ -183,10 +183,11 @@ class VerdictAgent(BaseAgent):
         risk_score: int,
     ) -> str:
         system = (
-            "You are the Verdict Agent of DocForensic AI. "
-            "You write a concise, evidence-cited summary explaining a fraud-risk "
-            "verdict on a single invoice or receipt. Be specific, name the agents "
-            "that flagged the document, and never speculate beyond the evidence."
+            "You are the Verdict Agent of DocForensic AI, an enterprise forensic platform tailored for the Indian corporate and SME compliance ecosystem. "
+            "You write a concise, evidence-cited summary explaining a fraud-risk verdict on an Indian invoice or tax bill. "
+            "All currency references must be in Indian Rupees (₹ / INR). Cite applicable Indian tax and corporate compliance factors "
+            "(e.g. GSTIN, PAN, IFSC banking verification, Section 194 TDS thresholds, or ACME India policy). "
+            "Be specific, name the agents that flagged the document, and never speculate beyond the evidence."
         )
         flags = self._collect_flag_text(state)
         user = (
@@ -240,11 +241,20 @@ class VerdictAgent(BaseAgent):
         if extraction is None:
             return "  (no extracted record to cross-check)"
 
+        id_bits = []
+        if getattr(extraction, "gstin", None):
+            id_bits.append(f"GSTIN={extraction.gstin}")
+        if getattr(extraction, "pan", None):
+            id_bits.append(f"PAN={extraction.pan}")
+        if getattr(extraction, "ifsc_code", None) or extraction.bank_routing:
+            id_bits.append(f"IFSC={extraction.ifsc_code or extraction.bank_routing}")
+        id_str = f", ({', '.join(id_bits)})" if id_bits else ""
+
         lines.append(
             f"  • Document states: vendor={extraction.vendor!r}, "
             f"invoice={extraction.invoice_number!r}, "
             f"date={extraction.invoice_date!r}, "
-            f"total={extraction.total_amount!r} {extraction.currency}"
+            f"total=₹{float(extraction.total_amount or 0.0):,.2f} INR{id_str}"
         )
 
         line_sum = sum(float(i.amount or 0.0) for i in extraction.line_items)
@@ -252,9 +262,9 @@ class VerdictAgent(BaseAgent):
             gap = line_sum - float(extraction.total_amount)
             if abs(gap) > 0.02:
                 lines.append(
-                    f"  • CONTRADICTION: line items sum to {line_sum:.2f} but the "
-                    f"printed total is {float(extraction.total_amount):.2f} "
-                    f"(gap {gap:+.2f})."
+                    f"  • CONTRADICTION: line items sum to ₹{line_sum:,.2f} INR but the "
+                    f"printed total is ₹{float(extraction.total_amount):,.2f} INR "
+                    f"(gap {gap:+,.2f})."
                 )
 
         if forensics is not None:
@@ -295,7 +305,7 @@ class VerdictAgent(BaseAgent):
             if ratio > 1.5:
                 lines.append(
                     f"  • This claim is {ratio:.1f}x the vendor's previous "
-                    f"maximum of {history.vendor_max_amount:.2f}."
+                    f"maximum of ₹{history.vendor_max_amount:,.2f} INR."
                 )
         if history is not None and any(f.code == "bank_account_changed" for f in history.flags):
             lines.append(
@@ -305,7 +315,7 @@ class VerdictAgent(BaseAgent):
         if state.ring is not None and state.ring.shared_routing_matches:
             first = state.ring.shared_routing_matches[0]
             lines.append(
-                f"  • SHELL VENDOR RING: Shares identical bank routing number with vendor '{first.matched_vendor}'."
+                f"  • SHELL VENDOR RING: Shares identical bank IFSC / routing code with vendor '{first.matched_vendor}'."
             )
 
         return "\n".join(lines) or "  (no cross-modal contradictions detected)"
@@ -326,7 +336,7 @@ class VerdictAgent(BaseAgent):
             if state.ring.shared_routing_matches:
                 for m in state.ring.shared_routing_matches[:2]:
                     bits.append(
-                        f"  • [CRITICAL] Shell vendor ring: identical routing ({m.shared_routing_number}) with vendor '{m.matched_vendor}'"
+                        f"  • [CRITICAL] Shell vendor ring: identical IFSC / routing ({m.shared_routing_number}) with vendor '{m.matched_vendor}'"
                     )
             for m in state.ring.matches[:3]:
                 if not m.shared_routing:

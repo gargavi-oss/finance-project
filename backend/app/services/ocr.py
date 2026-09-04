@@ -104,7 +104,7 @@ def _demo_ocr(image: Image.Image) -> ExtractionResult:
         invoice_number=payload.get("invoice_number"),
         invoice_date=payload.get("invoice_date"),
         total_amount=payload.get("total_amount"),
-        currency=payload.get("currency", "USD"),
+        currency="INR" if payload.get("currency") in (None, "USD") else payload.get("currency", "INR"),
         line_items=line_items,
         raw_text=payload.get("raw_text", ""),
         ocr_engine="demo-embedded",
@@ -120,12 +120,36 @@ def _demo_ocr(image: Image.Image) -> ExtractionResult:
 # --------------------------------------------------------------------------- #
 
 
-_MONEY_RE = re.compile(r"\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)")
+_MONEY_RE = re.compile(
+    r"(?:[₹\$€£]|Rs\.?|INR)?\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{2})?)",
+    re.IGNORECASE,
+)
 _DATE_RE = re.compile(
     r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})\b"
 )
 _INVOICE_RE = re.compile(
     r"\b(?:invoice|inv|bill)\s*(?:#|no\.?|number)?\s*[:#\s]\s*([A-Za-z0-9\/-]{2,})",
+    re.IGNORECASE,
+)
+_GSTIN_RE = re.compile(
+    r"\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}\b"
+)
+_GSTIN_LABEL_RE = re.compile(
+    r"(?:gstin|gst\s*(?:no\.?|#|id)?)\s*[:#\-]?\s*([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})",
+    re.IGNORECASE,
+)
+_PAN_RE = re.compile(
+    r"\b[A-Z]{5}\d{4}[A-Z]{1}\b"
+)
+_PAN_LABEL_RE = re.compile(
+    r"(?:pan\s*(?:no\.?|#|card)?)\s*[:#\-]?\s*([A-Z]{5}\d{4}[A-Z]{1})",
+    re.IGNORECASE,
+)
+_IFSC_RE = re.compile(
+    r"\b[A-Z]{4}0[A-Z0-9]{6}\b"
+)
+_IFSC_LABEL_RE = re.compile(
+    r"(?:ifsc\s*(?:code)?)\s*[:#\-]?\s*([A-Z]{4}0[A-Z0-9]{6})",
     re.IGNORECASE,
 )
 
@@ -421,14 +445,25 @@ def _run_tesseract(image: Image.Image, associated_pdf: Optional[Path] = None) ->
 
     combined_lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
 
-    # Vendor heuristic: pick first non-generic line
-    generic_vendor_words = ("invoice", "tax invoice", "bill", "receipt", "statement", "payment", "cash memo")
+    # Vendor heuristic: look for business name, avoid metadata labels
     vendor: Optional[str] = None
-    for ln in combined_lines[:12]:
-        low = ln.lower()
-        if low not in generic_vendor_words and len(ln) > 2 and not ln.startswith("#") and not any(w in low for w in ["particulars", "qty", "hsn"]):
-            vendor = ln
-            break
+    for ln in combined_lines:
+        m_for = re.search(r"^(?:for|m/s|from)\s*[:\-]?\s*([A-Za-z0-9\s\.\&]{3,50})", ln, re.IGNORECASE)
+        if m_for:
+            cand = m_for.group(1).strip()
+            if not any(w in cand.lower() for w in ["signature", "signatory", "jurisdiction"]):
+                vendor = cand
+                break
+    if not vendor:
+        for ln in combined_lines[:15]:
+            low = ln.lower()
+            if (
+                len(ln) > 3
+                and not any(w in low for w in ["invoice", "tax invoice", "bill", "receipt", "statement", "cash memo", "particulars", "qty", "hsn", "gstin", "date", "mobile", "total", "rate", "amount", "subject to", "authorized", "authorised"])
+                and not re.search(r"^\d+", ln)
+            ):
+                vendor = ln
+                break
     if not vendor and combined_lines:
         vendor = combined_lines[0]
 
@@ -437,6 +472,10 @@ def _run_tesseract(image: Image.Image, associated_pdf: Optional[Path] = None) ->
     total_amount: Optional[float] = None
     bank_account: Optional[str] = None
     bank_routing: Optional[str] = None
+    gstin: Optional[str] = None
+    pan: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    currency: str = "INR"
 
     for idx, ln in enumerate(combined_lines):
         if not invoice_number:
@@ -463,6 +502,36 @@ def _run_tesseract(image: Image.Image, associated_pdf: Optional[Path] = None) ->
                 next_m = re.search(r"([A-Za-z0-9]{6,12})", combined_lines[idx + 1])
                 if next_m:
                     bank_routing = next_m.group(1).strip()
+
+    # Scan raw_text comprehensively for GSTIN, PAN, IFSC
+    gm = re.search(r"(?:gstin|gst\s*(?:no\.?|#|id)?)\s*[:#\-]?\s*([0-9A-Z]{10,16})", raw_text, re.IGNORECASE) or _GSTIN_RE.search(raw_text)
+    if gm:
+        gstin = gm.group(1).strip() if gm.groups() else gm.group(0).strip()
+
+    if not pan and gstin:
+        pan_m = re.search(r"[A-Z]{5}[0-9]{4}[A-Z]{1}", gstin)
+        if pan_m:
+            pan = pan_m.group(0)
+    if not pan:
+        pm = re.search(r"(?:pan\s*(?:no\.?|#|card)?)\s*[:#\-]?\s*([A-Z]{5}\d{4}[A-Z]{1})", raw_text, re.IGNORECASE) or _PAN_RE.search(raw_text)
+        if pm:
+            pan = pm.group(1).strip() if pm.groups() else pm.group(0).strip()
+
+    if not ifsc_code:
+        im = re.search(r"(?:ifsc\s*(?:code)?)\s*[:#\-]?\s*([A-Z]{4}0[A-Z0-9]{6})", raw_text, re.IGNORECASE) or _IFSC_RE.search(raw_text)
+        if im:
+            ifsc_code = im.group(1).strip() if im.groups() else im.group(0).strip()
+
+    if ifsc_code and not bank_routing:
+        bank_routing = ifsc_code
+    elif bank_routing and not ifsc_code and _IFSC_RE.search(bank_routing):
+        ifsc_code = bank_routing
+
+    # Currency detection
+    if any(k in raw_text for k in ["₹", "Rs.", "Rs ", "INR"]):
+        currency = "INR"
+    elif "$" in raw_text or "USD" in raw_text:
+        currency = "INR"  # Standardized for India platform
 
     # Total amount heuristic (prefer grand total over generic total)
     for idx, ln in enumerate(combined_lines):
@@ -501,10 +570,13 @@ def _run_tesseract(image: Image.Image, associated_pdf: Optional[Path] = None) ->
         invoice_number=invoice_number,
         invoice_date=invoice_date,
         total_amount=total_amount,
-        currency="USD",
+        currency=currency,
         line_items=line_items,
         bank_account=bank_account,
         bank_routing=bank_routing,
+        gstin=gstin,
+        pan=pan,
+        ifsc_code=ifsc_code,
         raw_text=raw_text,
         ocr_engine="tesseract",
         confidence=0.88 if line_items else 0.70,

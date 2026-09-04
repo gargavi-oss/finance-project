@@ -197,6 +197,12 @@ async def _persist_event(
         row.total_amount = state.extraction.total_amount
         row.bank_account = state.extraction.bank_account
         row.bank_routing = state.extraction.bank_routing
+        if hasattr(row, "gstin"):
+            row.gstin = getattr(state.extraction, "gstin", None)
+        if hasattr(row, "pan"):
+            row.pan = getattr(state.extraction, "pan", None)
+        if hasattr(row, "ifsc_code"):
+            row.ifsc_code = getattr(state.extraction, "ifsc_code", None)
     if state.forensics is not None:
         row.ela_overlay_path = state.forensics.ela_overlay_path
         row.perceptual_hash = state.forensics.perceptual_hash
@@ -482,6 +488,9 @@ def _row_to_record(row: DocumentRow) -> DocumentRecord:
         total_amount=row.total_amount,
         bank_account=row.bank_account,
         bank_routing=row.bank_routing,
+        gstin=getattr(row, "gstin", None),
+        pan=getattr(row, "pan", None),
+        ifsc_code=getattr(row, "ifsc_code", None) or row.bank_routing,
         decision=DocumentDecision(row.decision),
         risk_score=row.risk_score,
         summary=row.summary,

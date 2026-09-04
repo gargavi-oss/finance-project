@@ -51,6 +51,9 @@ class DocumentRow(Base):
     total_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     bank_account: Mapped[str | None] = mapped_column(String(64), nullable=True)
     bank_routing: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    gstin: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pan: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ifsc_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     layout_vector: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
     decision: Mapped[str] = mapped_column(String(16), default="pending")
     risk_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -111,6 +114,9 @@ async def init_db() -> None:
             "page_count INTEGER NOT NULL DEFAULT 1",
             "bank_account VARCHAR(64)",
             "bank_routing VARCHAR(64)",
+            "gstin VARCHAR(32)",
+            "pan VARCHAR(32)",
+            "ifsc_code VARCHAR(32)",
             "layout_vector JSON",
         ):
             try:
