@@ -50,25 +50,61 @@ class VerdictAgent(BaseAgent):
                 AgentName.HISTORY: settings.weight_history,
                 AgentName.RING: settings.weight_ring,
             }
-            weighted = sum(
+            raw_weighted = sum(
                 findings[a].score * w for a, w in weights.items()
             )
-            risk_score = int(round(weighted * 100))
+            base_score = raw_weighted * 100.0
 
-            # Deterministic escalation. An internal arithmetic contradiction
-            # (the printed total does not reconcile with the line items) is, by
-            # itself, strong evidence of post-issuance editing. Such a structural
-            # fault is surfaced for human review regardless of whether the other
-            # agents happened to corroborate it — it must never be averaged away.
-            if state.forensics is not None and any(
+            # Dynamic multi-agent signal calibration
+            adjustments = 0.0
+
+            # 1. Tax & Arithmetic reconciliation
+            is_tax_reconciled = bool(
+                state.extraction
+                and state.extraction.completeness
+                and getattr(state.extraction.completeness, "tax_reconciled", False)
+            )
+            has_arithmetic_conflict = any(
                 f.code == "semantic_conflict" and f.severity == Severity.HIGH
-                for f in state.forensics.flags
+                for f in (state.forensics.flags if state.forensics else [])
+            )
+            if is_tax_reconciled:
+                # Statutory GST/taxes verified: credit risk reduction
+                adjustments -= 8.0
+            elif has_arithmetic_conflict:
+                conflict_flag = next(
+                    (f for f in state.forensics.flags if f.code == "semantic_conflict"), None
+                )
+                conf_val = conflict_flag.score if conflict_flag else 0.5
+                adjustments += 25.0 + conf_val * 20.0
+
+            # 2. Tamper localization overlap on total box
+            if state.forensics and state.forensics.patch_localization:
+                loc = state.forensics.patch_localization
+                if loc.overlap_score > 0.3:
+                    adjustments += 15.0 + loc.overlap_score * 20.0
+
+            # 3. Critical Shell Ring Detection (shared bank routing across different shell vendors)
+            if state.ring and state.ring.shared_routing_matches:
+                adjustments += 40.0
+
+            # 4. BEC / Sudden vendor anomaly
+            if state.history and any(
+                f.code in ("amount_spike", "bank_account_changed") for f in state.history.flags
             ):
-                risk_score = max(risk_score, 75)
+                adjustments += 20.0
+
+            calibrated_score = int(round(max(2.0, min(98.0, base_score + adjustments))))
+
+            # AI Agent synthesis: evaluate complete invoice context
+            summary, ai_score = await self._synthesise(state, findings, calibrated_score)
+
+            if ai_score is not None and 0 <= ai_score <= 100:
+                risk_score = ai_score
+            else:
+                risk_score = calibrated_score
 
             recommendation = recommendation_for_score(risk_score)
-
-            summary = await self._synthesise(state, findings, risk_score)
 
             state.verdict = VerdictResult(
                 risk_score=risk_score,
@@ -86,9 +122,9 @@ class VerdictAgent(BaseAgent):
                 ],
             )
 
-            if risk_score >= 75:
+            if risk_score >= 70:
                 self._mark(state, AgentStatus.HIGH)
-            elif risk_score >= 50:
+            elif risk_score >= 40:
                 self._mark(state, AgentStatus.REVIEW)
             else:
                 self._mark(state, AgentStatus.PASSED)
@@ -180,31 +216,42 @@ class VerdictAgent(BaseAgent):
         self,
         state: PipelineState,
         findings: dict[AgentName, AgentFinding],
-        risk_score: int,
-    ) -> str:
+        calibrated_score: int,
+    ) -> tuple[str, int | None]:
+        import re
         system = (
             "You are the Verdict Agent of DocForensic AI, an enterprise forensic platform tailored for the Indian corporate and SME compliance ecosystem. "
-            "You write a concise, evidence-cited summary explaining a fraud-risk verdict on an Indian invoice or tax bill. "
+            "You evaluate the complete invoice facts and multi-agent evidence to synthesize a final fraud-risk verdict and risk score on an Indian invoice or tax bill. "
             "All currency references must be in Indian Rupees (₹ / INR). Cite applicable Indian tax and corporate compliance factors "
-            "(e.g. GSTIN, PAN, IFSC banking verification, Section 194 TDS thresholds, or ACME India policy). "
-            "Be specific, name the agents that flagged the document, and never speculate beyond the evidence."
+            "(e.g. GSTIN, PAN, IFSC banking verification, statutory GST reconciliation, Section 194 TDS thresholds, or ACME India policy). "
+            "Be specific, name the agents that flagged or cleared the document, and never speculate beyond the evidence.\n\n"
+            "Format your response exactly as follows:\n"
+            "VERDICT_SCORE: <integer 0-100>\n"
+            "RECOMMENDATION: <approved|review|rejected>\n"
+            "SUMMARY: <A concise 3-5 sentence plain-English executive summary>"
         )
         flags = self._collect_flag_text(state)
         user = (
             f"Document: {state.filename}\n"
-            f"Risk score: {risk_score}/100\n\n"
+            f"Calibrated score: {calibrated_score}/100\n\n"
             f"Agent findings:\n"
             + "\n".join(f"- {a.value}: {f.headline} (score={f.score:.2f})" for a, f in findings.items())
             + f"\n\nForensic flags:\n{flags}\n\n"
             + f"Multimodal signal fusion:\n{self._fusion_text(state)}\n\n"
             + f"Cross-modal consistency check:\n{self._cross_modal_text(state)}\n\n"
-            + "Write a 3-5 sentence plain-English summary explaining the verdict "
-            "and the evidence behind it. Where two sources disagree — for example "
-            "when the printed total conflicts with the line items, or when a "
-            "clean-looking page carries tamper saliency on the total field — call "
-            "that contradiction out explicitly."
+            + "Evaluate this invoice holistically. Where numbers reconcile with statutory GST/taxes, note the verified arithmetic. "
+            "Where an irreconcilable contradiction exists or tamper saliency is detected on financial fields, call that out explicitly. "
+            "Determine the final AI risk score and provide your recommendation and summary."
         )
-        return await self._llm.chat(system, user)
+        raw_resp = await self._llm.chat(system, user)
+        score_match = re.search(r"VERDICT_SCORE:\s*(\d+)", raw_resp)
+        summary_match = re.search(r"SUMMARY:\s*(.+)", raw_resp, re.DOTALL)
+
+        ai_score = int(score_match.group(1)) if score_match else None
+        clean_summary = summary_match.group(1).strip() if summary_match else raw_resp.strip()
+        clean_summary = re.sub(r"^(?:VERDICT_SCORE|RECOMMENDATION):\s*.*?\n?", "", clean_summary, flags=re.MULTILINE).strip()
+
+        return clean_summary, ai_score
 
     @staticmethod
     def _fusion_text(state: PipelineState) -> str:
@@ -258,7 +305,12 @@ class VerdictAgent(BaseAgent):
         )
 
         line_sum = sum(float(i.amount or 0.0) for i in extraction.line_items)
-        if extraction.line_items and extraction.total_amount is not None:
+        is_reconciled = bool(
+            extraction.completeness and getattr(extraction.completeness, "tax_reconciled", False)
+        )
+        if is_reconciled and extraction.completeness.tax_note:
+            lines.append(f"  • ARITHMETIC RECONCILED: {extraction.completeness.tax_note}")
+        elif extraction.line_items and extraction.total_amount is not None:
             gap = line_sum - float(extraction.total_amount)
             if abs(gap) > 0.02:
                 lines.append(

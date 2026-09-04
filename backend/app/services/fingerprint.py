@@ -216,11 +216,14 @@ class FingerprintIndex:
                 continue
 
             # 2. Check 1536-dim layout vector cosine similarity (cloned template)
+            is_different_vendor = bool(
+                curr_vendor_norm and entry_vendor_norm and curr_vendor_norm != entry_vendor_norm
+            )
             if layout_vector and entry.layout_vector and len(entry.layout_vector) == 1536:
                 cos_sim = sum(a * b for a, b in zip(layout_vector, entry.layout_vector))
                 if cos_sim >= 0.92:
                     dist = max(0, int(round((1.0 - cos_sim) * 64)))
-                    if entry.document_id not in seen_ids:
+                    if is_different_vendor and entry.document_id not in seen_ids:
                         matches.append(
                             RingMatch(
                                 matched_document_id=entry.document_id,
@@ -237,7 +240,7 @@ class FingerprintIndex:
             # 3. Check 64-bit perceptual hash (pHash) Hamming distance
             if target_ph is not None and entry.perceptual_hash is not None:
                 distance = target_ph - entry.perceptual_hash
-                if distance <= threshold and entry.document_id not in seen_ids:
+                if distance <= threshold and is_different_vendor and entry.document_id not in seen_ids:
                     matches.append(
                         RingMatch(
                             matched_document_id=entry.document_id,

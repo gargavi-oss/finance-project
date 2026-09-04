@@ -426,11 +426,73 @@ def _extract_line_items_from_image(image: Image.Image, raw_lines: list[str]) -> 
     return best_items
 
 
+def _deblur_and_enhance(image: Image.Image) -> tuple[Image.Image, Image.Image]:
+    """Deblur, upscale, and enhance contrast of a document image for optimal OCR.
+
+    Recovers legible text from blurry scans, camera motion blur, low-resolution
+    mobile captures, or faint faded receipts.
+    """
+    import cv2
+    import numpy as np
+
+    img_rgb = np.array(image.convert("RGB"))
+    h, w = img_rgb.shape[:2]
+
+    # 1. Super-resolution / upscaling for low-resolution or blurry small text
+    if w < 1800 or h < 1800:
+        scale = max(1800.0 / w, 1800.0 / h)
+        scale = min(scale, 3.0)  # cap scale factor
+        new_w = int(round(w * scale))
+        new_h = int(round(h * scale))
+        img_rgb = cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+
+    # 2. Grayscale conversion
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+
+    # 3. Bilateral smoothing to remove high-frequency JPEG grain while preserving edge sharpness
+    denoised = cv2.bilateralFilter(gray, 7, 45, 45)
+
+    # 4. CLAHE to bring out faint text and equalize shadows/glare
+    clahe = cv2.createCLAHE(clipLimit=2.4, tileGridSize=(8, 8))
+    contrast = clahe.apply(denoised)
+
+    # 5. Deblur using high-pass Unsharp Masking
+    gaussian = cv2.GaussianBlur(contrast, (0, 0), 2.0)
+    unsharp = cv2.addWeighted(contrast, 1.7, gaussian, -0.7, 0)
+
+    # 6. Adaptive Gaussian binarization for heavy blur / low contrast
+    binarized = cv2.adaptiveThreshold(
+        unsharp, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 11
+    )
+
+    return Image.fromarray(unsharp), Image.fromarray(binarized)
+
+
 def _run_tesseract(image: Image.Image, associated_pdf: Optional[Path] = None) -> ExtractionResult:
     import pytesseract  # type: ignore
 
-    text = pytesseract.image_to_string(image)
+    enhanced_img, binarized_img = _deblur_and_enhance(image)
+
+    # Multi-pass OCR: pass 1 on deblurred unsharp image
+    try:
+        text = pytesseract.image_to_string(enhanced_img)
+    except Exception as exc:
+        logger.warning("OCR on enhanced image failed: %s", exc)
+        text = pytesseract.image_to_string(image)
+
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    # If pass 1 text is sparse (e.g. heavy blur or low contrast), fall back to binarized pass
+    if len(lines) < 8:
+        try:
+            bin_text = pytesseract.image_to_string(binarized_img)
+            bin_lines = [ln.strip() for ln in bin_text.splitlines() if ln.strip()]
+            if len(bin_lines) > len(lines):
+                text = bin_text
+                lines = bin_lines
+        except Exception:
+            pass
+
     raw_text = "\n".join(lines)
 
     # Extract from associated PDF if available
@@ -561,9 +623,24 @@ def _run_tesseract(image: Image.Image, associated_pdf: Optional[Path] = None) ->
                     if m_next:
                         total_amount = float(m_next.group(1).replace(",", ""))
 
-    # Fallback to image-based line item extraction
+    # Fallback to image-based line item extraction using deblurred image
     if not line_items:
-        line_items = _extract_line_items_from_image(image, lines)
+        line_items = _extract_line_items_from_image(enhanced_img, lines)
+        if not line_items:
+            line_items = _extract_line_items_from_image(binarized_img, lines)
+        if not line_items:
+            line_items = _extract_line_items_from_image(image, lines)
+
+    # Compute actual word-level OCR confidence from deblurred pass
+    confidence = 0.88 if line_items else 0.70
+    try:
+        from pytesseract import Output  # type: ignore
+        data = pytesseract.image_to_data(enhanced_img, output_type=Output.DICT)
+        confs = [float(c) for c in data.get("conf", []) if float(c) > 0]
+        if confs:
+            confidence = round(float(sum(confs) / len(confs)) / 100.0, 3)
+    except Exception:
+        pass
 
     return ExtractionResult(
         vendor=vendor,
@@ -579,7 +656,7 @@ def _run_tesseract(image: Image.Image, associated_pdf: Optional[Path] = None) ->
         ifsc_code=ifsc_code,
         raw_text=raw_text,
         ocr_engine="tesseract",
-        confidence=0.88 if line_items else 0.70,
+        confidence=confidence,
         flagged_regions=[],
     )
 
@@ -784,7 +861,7 @@ def run_ocr(image_path: str | Path) -> ExtractionResult:
             import pymupdf
             doc = pymupdf.open(path)
             page = doc.load_page(0)
-            pix = page.get_pixmap(dpi=150)
+            pix = page.get_pixmap(dpi=300)
             image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             if _tesseract_available():
                 return _run_tesseract(image, associated_pdf=associated_pdf)

@@ -411,9 +411,13 @@ def run_forensics(
     # exactly the case Error Level Analysis is least sensitive to — so the
     # arithmetic contradiction is the decisive, reliable discriminator.)
     sem_conflict = completeness.semantic_conflict_score if completeness else 0.0
+    has_unreconciled_mismatch = (
+        completeness is not None
+        and any(i.code == "total_mismatch" and i.severity == Severity.HIGH for i in completeness.issues)
+    )
     base = max(fusion.score, 0.7 * meta_score, 0.7 * font_score)
-    if sem_conflict >= 0.30:
-        base = max(base, 0.70)
+    if has_unreconciled_mismatch:
+        base = max(base, 0.65 + min(0.25, sem_conflict * 0.35))
     composite = min(
         1.0,
         base

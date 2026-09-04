@@ -212,6 +212,8 @@ class CompletenessResult(BaseModel):
     semantic_conflict_score: float = Field(ge=0.0, le=1.0)
     extraction_confidence_score: float = Field(ge=0.0, le=1.0)
     sharpness: float = Field(ge=0.0, le=1.0)
+    tax_reconciled: bool = False
+    tax_note: Optional[str] = None
 
 
 class ForensicsResult(BaseModel):
@@ -238,12 +240,16 @@ class PolicyCitation(BaseModel):
     clause_title: str
     snippet: str
     relevance: float = Field(ge=0.0, le=1.0)
+    status: str = "violated"  # "violated" or "passed"
 
 
 class PolicyResult(BaseModel):
-    score: float = Field(ge=0.0, le=1.0)  # higher = more policy-violating
+    score: float = Field(ge=0.0, le=1.0)  # higher = more policy-violating risk
+    compliance_score: float = Field(default=1.0, ge=0.0, le=1.0)  # 1.0 = 100% compliant
     violated_clauses: list[PolicyCitation] = Field(default_factory=list)
+    passed_clauses: list[PolicyCitation] = Field(default_factory=list)
     rationale: str = ""
+    summary: str = ""
 
 
 class HistoryFlag(BaseModel):
@@ -254,12 +260,34 @@ class HistoryFlag(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
 
 
+class PriorInvoiceSummary(BaseModel):
+    document_id: str
+    filename: str
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    total_amount: float = 0.0
+    decision: str = "pending"
+    risk_score: Optional[int] = None
+    created_at: str = ""
+    bank_account_masked: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    gstin: Optional[str] = None
+
+
 class HistoryResult(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
     vendor_prior_submissions: int = 0
     vendor_avg_amount: float = 0.0
     vendor_max_amount: float = 0.0
+    vendor_min_amount: float = 0.0
+    vendor_total_spend: float = 0.0
     vendor_stddev: float = 0.0
+    first_seen_date: Optional[str] = None
+    last_seen_date: Optional[str] = None
+    trust_status: str = "new"  # verified, established, new, flagged
+    known_bank_accounts: list[str] = Field(default_factory=list)
+    known_ifsc_codes: list[str] = Field(default_factory=list)
+    prior_invoices: list[PriorInvoiceSummary] = Field(default_factory=list)
     flags: list[HistoryFlag] = Field(default_factory=list)
 
 

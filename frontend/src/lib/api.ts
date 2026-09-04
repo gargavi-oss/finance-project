@@ -107,10 +107,35 @@ export interface Forensics {
   fusion?: { score: number; contributions: Array<{ name: string; raw: number; weighted: number }> } | null;
 }
 
+export interface PolicyCitation {
+  clause_id: string;
+  clause_title: string;
+  snippet: string;
+  relevance: number;
+  status?: string;
+}
+
 export interface Policy {
   score: number;
-  violated_clauses: Array<{ clause_id: string; clause_title: string; snippet: string; relevance: number }>;
+  compliance_score?: number;
+  violated_clauses: PolicyCitation[];
+  passed_clauses?: PolicyCitation[];
   rationale: string;
+  summary?: string;
+}
+
+export interface PriorInvoiceSummary {
+  document_id: string;
+  filename: string;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  total_amount: number;
+  decision: string;
+  risk_score: number | null;
+  created_at: string;
+  bank_account_masked?: string | null;
+  ifsc_code?: string | null;
+  gstin?: string | null;
 }
 
 export interface History {
@@ -118,7 +143,15 @@ export interface History {
   vendor_prior_submissions: number;
   vendor_avg_amount: number;
   vendor_max_amount: number;
+  vendor_min_amount?: number;
+  vendor_total_spend?: number;
   vendor_stddev: number;
+  first_seen_date?: string | null;
+  last_seen_date?: string | null;
+  trust_status?: "verified" | "established" | "new" | "flagged" | string;
+  known_bank_accounts?: string[];
+  known_ifsc_codes?: string[];
+  prior_invoices?: PriorInvoiceSummary[];
   flags: Array<{ code: string; label: string; severity: string; detail: string; score: number }>;
 }
 
@@ -217,7 +250,17 @@ export async function getDocument(id: string): Promise<DocumentRecord> {
 }
 
 export async function getPayload(id: string): Promise<{ status: string; payload: FullPayload | null }> {
-  return jsonOrThrow(await fetch(`${BASE}/api/documents/${id}/payload`));
+  const res = await jsonOrThrow<{ status: string; payload: FullPayload | string | null }>(
+    await fetch(`${BASE}/api/documents/${id}/payload`),
+  );
+  if (res && typeof res.payload === "string") {
+    try {
+      res.payload = JSON.parse(res.payload);
+    } catch {
+      // noop
+    }
+  }
+  return res as { status: string; payload: FullPayload | null };
 }
 
 export async function postDecision(id: string, body: { action: string; actor?: string; notes?: string }): Promise<{ ok: boolean; audit: AuditEntry }> {

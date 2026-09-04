@@ -105,8 +105,6 @@ class LLMClient:
         except Exception as exc:
             logger.warning("LLM call failed (%s), returning demo synthesis", exc)
             return _demo_chat(system, user)
-
-
 def _demo_chat(system: str, user: str) -> str:
     """Deterministic, dependency-free synthesis.
 
@@ -117,7 +115,7 @@ def _demo_chat(system: str, user: str) -> str:
     import re as _re
 
     # Extract risk score.
-    risk_match = _re.search(r"Risk score:\s*(\d+)/100", user)
+    risk_match = _re.search(r"(?:Risk score|Baseline score|Calibrated score):\s*(\d+)/100", user)
     risk_score = int(risk_match.group(1)) if risk_match else 50
 
     # Extract filename.
@@ -136,23 +134,26 @@ def _demo_chat(system: str, user: str) -> str:
     for m in _re.finditer(r"\[(?:HIGH|MEDIUM|LOW)\]\s*(.+?)(?:\n|$)", user):
         flags.append(m.group(1).strip())
 
-    # Extract contradictions.
+    # Extract contradictions and tax reconciliation.
     contradictions: list[str] = []
     for m in _re.finditer(r"CONTRADICTION:\s*(.+?)(?:\n|$)", user):
         contradictions.append(m.group(1).strip())
 
+    reconciled_match = _re.search(r"ARITHMETIC RECONCILED:\s*(.+?)(?:\n|$)", user)
+    tax_note = reconciled_match.group(1).strip() if reconciled_match else None
+
     # Build a professional summary.
     parts: list[str] = []
 
-    if risk_score >= 75:
+    if risk_score >= 70:
         parts.append(
             f"The analysis of {filename} has identified material fraud indicators "
-            f"requiring immediate intervention, with a composite risk score of {risk_score}/100."
+            f"requiring immediate intervention, with an AI composite risk score of {risk_score}/100."
         )
-    elif risk_score >= 50:
+    elif risk_score >= 40:
         parts.append(
             f"The analysis of {filename} has raised concerns that warrant a focused "
-            f"human review, with a composite risk score of {risk_score}/100."
+            f"human review, with an AI composite risk score of {risk_score}/100."
         )
     else:
         parts.append(
@@ -164,15 +165,15 @@ def _demo_chat(system: str, user: str) -> str:
     high_findings = [
         (name, headline) for name, headline, score in findings if score >= 0.5
     ]
-    low_findings = [
-        (name, headline) for name, headline, score in findings if score < 0.5
-    ]
 
-    if high_findings:
+    if high_findings and risk_score >= 40:
         agents_text = ", ".join(
             f"the {name} agent ({headline})" for name, headline in high_findings
         )
         parts.append(f"Key signals were raised by {agents_text}.")
+
+    if tax_note:
+        parts.append(f"Statutory tax and arithmetic reconciliation verified ({tax_note}).")
 
     if contradictions:
         parts.append(
@@ -180,22 +181,22 @@ def _demo_chat(system: str, user: str) -> str:
             "; ".join(c.rstrip(".") for c in contradictions[:2]) + "."
         )
 
-    if flags and risk_score >= 50:
+    if flags and risk_score >= 40:
         flag_text = "; ".join(f.split(":")[0].strip() for f in flags[:3])
         parts.append(f"Forensic flags include: {flag_text}.")
 
-    if low_findings and risk_score < 50:
+    if not high_findings and risk_score < 40:
         parts.append(
             "All evidence agents completed their review without identifying "
-            "material anomalies or policy violations."
+            "material tampering or high-risk anomalies."
         )
 
-    if risk_score >= 75:
+    if risk_score >= 70:
         parts.append(
             "This case should be escalated for detailed manual review before "
             "any payment is authorised."
         )
-    elif risk_score >= 50:
+    elif risk_score >= 40:
         parts.append(
             "A reviewer should examine the flagged areas before making a "
             "final disposition."
@@ -205,4 +206,8 @@ def _demo_chat(system: str, user: str) -> str:
             "The document may proceed through the standard approval workflow."
         )
 
-    return " ".join(parts)
+    summary_text = " ".join(parts)
+    if "VERDICT_SCORE:" in user or "Format your output exactly as" in user:
+        rec = "rejected" if risk_score >= 70 else ("review" if risk_score >= 40 else "approved")
+        return f"VERDICT_SCORE: {risk_score}\nRECOMMENDATION: {rec}\nSUMMARY: {summary_text}"
+    return summary_text

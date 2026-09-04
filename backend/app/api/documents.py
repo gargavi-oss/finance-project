@@ -315,7 +315,7 @@ async def get_document_file(doc_id: str, download: bool = False):
                 import pymupdf
                 doc = pymupdf.open(file_path)
                 page = doc.load_page(0)
-                pix = page.get_pixmap(dpi=150)
+                pix = page.get_pixmap(dpi=200)
                 pix.save(str(page1_png))
             except Exception as exc:
                 logger.warning("Could not rasterize PDF on preview: %s", exc)
@@ -379,7 +379,13 @@ async def get_document_payload(doc_id: str):
             raise HTTPException(status_code=404, detail="document not found")
         if row.agent_payload is None:
             return JSONResponse({"status": "pending", "payload": None})
-        return JSONResponse({"status": "ready", "payload": row.agent_payload})
+        payload_data = row.agent_payload
+        if isinstance(payload_data, str):
+            try:
+                payload_data = json.loads(payload_data)
+            except Exception:
+                pass
+        return JSONResponse({"status": "ready", "payload": payload_data})
 
 
 # --------------------------------------------------------------------------- #

@@ -104,6 +104,83 @@ def measure_sharpness(image_path: str | Path) -> float:
         return 0.5
 
 
+def reconcile_invoice_arithmetic(
+    line_sum: float,
+    stated_total: float,
+    raw_text: str = "",
+) -> tuple[bool, str, float]:
+    """Reconcile itemized line items sum with the grand total.
+
+    Returns (reconciled, explanation, deviation).
+    Checks:
+    1. Direct match (line_sum == stated_total).
+    2. Standard statutory GST rates in India (5%, 12%, 18%, 28%).
+    3. Explicit tax breakdown from raw text (CGST, SGST, IGST, VAT, etc.).
+    """
+    stated_total = float(stated_total)
+    line_sum = float(line_sum)
+    if stated_total <= 0:
+        return False, "Non-positive total", 0.0
+
+    # 1. Direct match within small tolerance
+    tolerance = max(_AMOUNT_TOLERANCE, abs(stated_total) * _RELATIVE_TOLERANCE)
+    if abs(line_sum - stated_total) <= tolerance:
+        return True, f"Line items sum ₹{line_sum:,.2f} exactly matches grand total ₹{stated_total:,.2f}", 0.0
+
+    # 2. Check standard statutory GST rates (5%, 12%, 18%, 28%)
+    gst_rates = [0.18, 0.12, 0.05, 0.28]
+    for rate in gst_rates:
+        expected = line_sum * (1.0 + rate)
+        rate_tol = max(2.5, stated_total * 0.01)
+        if abs(expected - stated_total) <= rate_tol:
+            tax_amt = stated_total - line_sum
+            pct = int(round(rate * 100))
+            return True, (
+                f"Reconciled with {pct}% GST: Line items ₹{line_sum:,.2f} + {pct}% GST "
+                f"(₹{tax_amt:,.2f}) = Grand Total ₹{stated_total:,.2f}"
+            ), 0.0
+
+    # 3. Check extracted taxes from OCR text
+    if raw_text:
+        patterns = [
+            r"(?i)(?:add\s*:\s*)?(?:cgst|sgst|igst|gst|tax|vat)\s*(?:@\s*(\d+(?:\.\d+)?)\s*%)?\s*[:\-]?\s*(?:(?:rs\.?|₹)\s*)?([0-9,]+(?:\.\d{2})?)",
+            r"(?i)(?:total\s+tax|tax\s+amount|gst\s+amount)\s*[:\-]?\s*(?:(?:rs\.?|₹)\s*)?([0-9,]+(?:\.\d{2})?)",
+        ]
+        tax_vals: list[float] = []
+        for p in patterns:
+            for m in re.finditer(p, raw_text):
+                groups = m.groups()
+                val_str = groups[-1]
+                if val_str:
+                    try:
+                        v = float(val_str.replace(",", ""))
+                        if 0 < v < stated_total:
+                            tax_vals.append(v)
+                    except ValueError:
+                        pass
+        if tax_vals:
+            tax_sum = sum(tax_vals)
+            if abs((line_sum + tax_sum) - stated_total) <= max(2.5, stated_total * 0.01):
+                return True, (
+                    f"Reconciled with extracted taxes: Line items ₹{line_sum:,.2f} + taxes "
+                    f"₹{tax_sum:,.2f} = Grand Total ₹{stated_total:,.2f}"
+                ), 0.0
+            diff = stated_total - line_sum
+            for tv in tax_vals:
+                if abs(tv - diff) <= max(2.5, stated_total * 0.01):
+                    return True, (
+                        f"Reconciled: Line items ₹{line_sum:,.2f} + tax ₹{tv:,.2f} = "
+                        f"Grand Total ₹{stated_total:,.2f}"
+                    ), 0.0
+
+    deviation = abs(line_sum - stated_total)
+    relative = deviation / max(abs(stated_total), 1e-6)
+    return False, (
+        f"Line items sum to ₹{line_sum:,.2f} but document states ₹{stated_total:,.2f} "
+        f"— an unreconciled gap of ₹{deviation:,.2f} ({relative * 100:.1f}%)"
+    ), deviation
+
+
 def validate_record(
     extraction: ExtractionResult,
     *,
@@ -120,59 +197,67 @@ def validate_record(
         if value not in (None, "", 0):
             present += 1
             continue
+        # Distinguish severity: missing invoice_number or date is low severity formatting/OCR limit
+        sev = Severity.MEDIUM if field in ("total_amount", "vendor") else Severity.LOW
+        sc = 0.4 if field in ("total_amount", "vendor") else 0.2
+        conf_incr = 0.10 if field in ("total_amount", "vendor") else 0.05
         issues.append(
             CompletenessIssue(
                 code=f"missing_{field}",
                 label=f"Missing {field.replace('_', ' ')}",
-                severity=Severity.MEDIUM,
+                severity=sev,
                 detail=(
                     f"A payable invoice must carry a {field.replace('_', ' ')}; "
                     "it could not be extracted from this document."
                 ),
-                score=0.5,
+                score=sc,
             )
         )
-        conflict += 0.15
+        conflict += conf_incr
 
     if not extraction.line_items:
         issues.append(
             CompletenessIssue(
                 code="missing_line_items",
                 label="No line items extracted",
-                severity=Severity.MEDIUM,
+                severity=Severity.LOW,
                 detail="The document carries a total but no itemised breakdown.",
-                score=0.5,
+                score=0.3,
             )
         )
-        conflict += 0.12
+        conflict += 0.08
 
     total = len(REQUIRED_FIELDS)
     completeness = round(present / total, 4) if total else 1.0
 
-    # --- arithmetic: line items vs stated total ---------------------------- #
+    # --- arithmetic: line items vs stated total with tax reconciliation --- #
     line_sum = sum(float(item.amount or 0.0) for item in extraction.line_items)
     stated_total = extraction.total_amount
+    tax_reconciled = False
+    tax_note: str | None = None
 
-    if extraction.line_items and stated_total is not None:
-        deviation = abs(line_sum - float(stated_total))
-        tolerance = max(_AMOUNT_TOLERANCE, abs(float(stated_total)) * _RELATIVE_TOLERANCE)
-        if deviation > tolerance:
+    if extraction.line_items and stated_total is not None and float(stated_total) > 0:
+        reconciled, explanation, deviation = reconcile_invoice_arithmetic(
+            line_sum=line_sum,
+            stated_total=float(stated_total),
+            raw_text=extraction.raw_text,
+        )
+        if reconciled:
+            tax_reconciled = True
+            tax_note = explanation
+        else:
             relative = deviation / max(abs(float(stated_total)), 1e-6)
-            severity = Severity.HIGH if relative >= 0.05 else Severity.MEDIUM
+            severity = Severity.HIGH if relative >= 0.25 else Severity.MEDIUM
             issues.append(
                 CompletenessIssue(
                     code="total_mismatch",
                     label="Line items do not reconcile to the total",
                     severity=severity,
-                    detail=(
-                        f"Line items sum to {line_sum:.2f} but the document states "
-                        f"{float(stated_total):.2f} — a gap of {deviation:.2f} "
-                        f"({relative * 100:.1f}%)."
-                    ),
-                    score=min(1.0, 0.45 + relative),
+                    detail=explanation,
+                    score=min(1.0, 0.50 + relative * 0.4),
                 )
             )
-            conflict += min(0.55, 0.30 + relative)
+            conflict += min(0.55, 0.25 + relative * 0.3)
 
     # --- arithmetic inside each line --------------------------------------- #
     per_line_errors = 0
@@ -296,4 +381,6 @@ def validate_record(
         semantic_conflict_score=round(float(np.clip(conflict, 0.0, 1.0)), 4),
         extraction_confidence_score=round(extraction_confidence, 4),
         sharpness=round(float(sharpness), 4),
+        tax_reconciled=tax_reconciled,
+        tax_note=tax_note,
     )

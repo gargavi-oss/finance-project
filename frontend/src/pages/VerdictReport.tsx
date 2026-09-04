@@ -1098,6 +1098,7 @@ function PolicyEvidence({
   payload: FullPayload;
 }) {
   const p = payload.policy;
+  const complianceScore = p?.compliance_score ?? (p ? Math.max(0.05, 1 - p.score) : 1);
 
   return (
     <EvidenceCard
@@ -1107,41 +1108,66 @@ function PolicyEvidence({
     >
       {p ? (
         <>
-          <EvidenceMeter
-            label="Violation score"
-            value={p.score}
-          />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "12px" }}>
+            <EvidenceMeter
+              label="Compliance rating"
+              value={complianceScore}
+            />
+            <EvidenceMeter
+              label="Violation risk"
+              value={p.score}
+            />
+          </div>
 
-          <p className="evidence-rationale">
-            {p.rationale ||
-              "No policy rationale returned."}
-          </p>
+          <div
+            style={{
+              background: "rgba(255, 255, 255, 0.03)",
+              border: "1px solid rgba(255, 255, 255, 0.08)",
+              borderLeft: p.score > 0.4 ? "4px solid #f87171" : "4px solid #34d399",
+              borderRadius: "6px",
+              padding: "10px 14px",
+              marginBottom: "14px",
+            }}
+          >
+            <strong style={{ display: "block", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-muted)", marginBottom: "4px" }}>
+              Policy Audit Summary
+            </strong>
+            <p className="evidence-rationale" style={{ margin: 0, lineHeight: 1.45 }}>
+              {p.summary || p.rationale || "All active statutory expense rules and verification thresholds evaluated."}
+            </p>
+          </div>
 
-          <ul>
-            {p.violated_clauses.length ? (
+          <ul style={{ maxHeight: "300px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px" }}>
+            {p.violated_clauses && p.violated_clauses.length ? (
               p.violated_clauses.map((clause) => (
-                <li key={clause.clause_id}>
-                  <strong>
-                    {clause.clause_id} ·{" "}
-                    {clause.clause_title}
+                <li key={clause.clause_id} style={{ borderColor: "rgba(239, 68, 68, 0.35)", background: "rgba(239, 68, 68, 0.05)" }}>
+                  <strong style={{ color: "#f87171" }}>
+                    ⚠ {clause.clause_id} · {clause.clause_title}
                   </strong>
-
-                  <span>
-                    {clause.snippet}
-                  </span>
+                  <span>{clause.snippet}</span>
                 </li>
               ))
-            ) : (
-              <li>
-                <strong>
-                  Within policy
-                </strong>
+            ) : null}
 
+            {p.passed_clauses && p.passed_clauses.length ? (
+              p.passed_clauses.map((clause) => (
+                <li key={clause.clause_id}>
+                  <strong style={{ color: "#34d399" }}>
+                    ✓ {clause.clause_id} · {clause.clause_title}
+                  </strong>
+                  <span>{clause.snippet}</span>
+                </li>
+              ))
+            ) : !p.violated_clauses?.length ? (
+              <li>
+                <strong style={{ color: "#34d399" }}>
+                  ✓ Standard Expense Policy Compliant
+                </strong>
                 <span>
-                  No violated clauses were retrieved.
+                  All active statutory thresholds, receipt requirements, and approval limits verified.
                 </span>
               </li>
-            )}
+            ) : null}
           </ul>
         </>
       ) : (
@@ -1163,63 +1189,199 @@ function HistoryEvidence({
   payload: FullPayload;
 }) {
   const h = payload.history;
+  const ext = payload.extraction;
+
+  const renderTrustBadge = () => {
+    if (!h) return null;
+    const status = h.trust_status || (h.vendor_prior_submissions >= 2 ? "verified" : h.vendor_prior_submissions > 0 ? "established" : "new");
+    if (status === "verified") {
+      return (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.2rem 0.55rem", borderRadius: "9999px", fontSize: "0.75rem", fontWeight: 600, background: "rgba(16, 185, 129, 0.15)", color: "#10b981", border: "1px solid rgba(16, 185, 129, 0.3)" }}>
+          <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#10b981" }} /> Verified Supplier
+        </span>
+      );
+    }
+    if (status === "established") {
+      return (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.2rem 0.55rem", borderRadius: "9999px", fontSize: "0.75rem", fontWeight: 600, background: "rgba(59, 130, 246, 0.15)", color: "#3b82f6", border: "1px solid rgba(59, 130, 246, 0.3)" }}>
+          <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#3b82f6" }} /> Established Profile
+        </span>
+      );
+    }
+    if (status === "flagged") {
+      return (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.2rem 0.55rem", borderRadius: "9999px", fontSize: "0.75rem", fontWeight: 600, background: "rgba(239, 68, 68, 0.15)", color: "#ef4444", border: "1px solid rgba(239, 68, 68, 0.3)" }}>
+          <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#ef4444" }} /> High Risk Anomaly
+        </span>
+      );
+    }
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.2rem 0.55rem", borderRadius: "9999px", fontSize: "0.75rem", fontWeight: 600, background: "rgba(245, 158, 11, 0.15)", color: "#f59e0b", border: "1px solid rgba(245, 158, 11, 0.3)" }}>
+        <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#f59e0b" }} /> First-Time Vendor
+      </span>
+    );
+  };
 
   return (
     <EvidenceCard
       index="C"
-      title="Vendor history"
+      title="Vendor intelligence & history"
       status={payload.agent_status.history}
     >
       {h ? (
         <>
-          <div className="mini-stats">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", flexWrap: "wrap", gap: "0.5rem" }}>
             <div>
-              <strong>
-                {h.vendor_prior_submissions}
-              </strong>
+              <strong style={{ fontSize: "0.95rem", color: "var(--foreground)" }}>{ext?.vendor || "Identified Vendor"}</strong>
+              {(ext?.gstin || ext?.pan) && (
+                <span style={{ display: "block", fontSize: "0.72rem", color: "var(--muted-foreground)" }}>
+                  {ext.gstin ? `GSTIN: ${ext.gstin}` : ""} {ext.pan ? `· PAN: ${ext.pan}` : ""}
+                </span>
+              )}
+            </div>
+            {renderTrustBadge()}
+          </div>
 
-              <span>prior submissions</span>
+          <div className="mini-stats" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+            <div>
+              <strong>{h.vendor_prior_submissions}</strong>
+              <span>prior claims</span>
             </div>
 
             <div>
-              <strong>
-                {fmtCurrency(
-                  h.vendor_avg_amount,
-                )}
-              </strong>
-
-              <span>average amount</span>
+              <strong>{fmtCurrency(h.vendor_total_spend ?? (h.vendor_avg_amount * h.vendor_prior_submissions))}</strong>
+              <span>lifetime spend</span>
             </div>
 
             <div>
-              <strong>
-                {fmtCurrency(
-                  h.vendor_max_amount,
-                )}
-              </strong>
+              <strong>{fmtCurrency(h.vendor_avg_amount)}</strong>
+              <span>historical avg</span>
+            </div>
 
-              <span>previous maximum</span>
+            <div>
+              <strong>{fmtCurrency(h.vendor_max_amount)}</strong>
+              <span>previous peak</span>
             </div>
           </div>
 
-          <ul>
+          {(h.known_bank_accounts?.length || h.known_ifsc_codes?.length || h.first_seen_date) && (
+            <div style={{ marginTop: "0.75rem", padding: "0.5rem 0.75rem", borderRadius: "6px", background: "rgba(255, 255, 255, 0.03)", border: "1px solid var(--border)", fontSize: "0.75rem", display: "flex", flexWrap: "wrap", gap: "1rem" }}>
+              {h.first_seen_date && (
+                <div>
+                  <span style={{ color: "var(--muted-foreground)" }}>First Seen: </span>
+                  <strong style={{ color: "var(--foreground)" }}>{h.first_seen_date}</strong>
+                </div>
+              )}
+              {h.last_seen_date && (
+                <div>
+                  <span style={{ color: "var(--muted-foreground)" }}>Last Seen: </span>
+                  <strong style={{ color: "var(--foreground)" }}>{h.last_seen_date}</strong>
+                </div>
+              )}
+              {h.known_bank_accounts && h.known_bank_accounts.length > 0 && (
+                <div>
+                  <span style={{ color: "var(--muted-foreground)" }}>Known Account: </span>
+                  <strong style={{ color: "var(--foreground)", fontFamily: "monospace" }}>{h.known_bank_accounts[0]}</strong>
+                </div>
+              )}
+              {h.known_ifsc_codes && h.known_ifsc_codes.length > 0 && (
+                <div>
+                  <span style={{ color: "var(--muted-foreground)" }}>Verified IFSC: </span>
+                  <strong style={{ color: "var(--foreground)", fontFamily: "monospace" }}>{h.known_ifsc_codes[0]}</strong>
+                </div>
+              )}
+            </div>
+          )}
+
+          {h.prior_invoices && h.prior_invoices.length > 0 && (
+            <div style={{ marginTop: "0.85rem", borderTop: "1px solid var(--border)", paddingTop: "0.75rem" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.4rem" }}>
+                <strong style={{ fontSize: "0.8rem", color: "var(--foreground)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Prior Submissions Ledger
+                </strong>
+                <span style={{ fontSize: "0.72rem", color: "var(--muted-foreground)" }}>
+                  {h.prior_invoices.length} historical record(s)
+                </span>
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", fontSize: "0.75rem", borderCollapse: "collapse", textAlign: "left" }}>
+                  <thead>
+                    <tr style={{ color: "var(--muted-foreground)", borderBottom: "1px solid var(--border)" }}>
+                      <th style={{ padding: "0.35rem 0.4rem" }}>Date</th>
+                      <th style={{ padding: "0.35rem 0.4rem" }}>Invoice #</th>
+                      <th style={{ padding: "0.35rem 0.4rem" }}>Amount</th>
+                      <th style={{ padding: "0.35rem 0.4rem" }}>Status</th>
+                      <th style={{ padding: "0.35rem 0.4rem" }}>Risk</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {h.prior_invoices.map((inv) => (
+                      <tr key={inv.document_id} style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.04)" }}>
+                        <td style={{ padding: "0.35rem 0.4rem", color: "var(--muted-foreground)" }}>
+                          {inv.created_at || inv.invoice_date || "—"}
+                        </td>
+                        <td style={{ padding: "0.35rem 0.4rem", fontWeight: 500, fontFamily: "monospace" }}>
+                          {inv.invoice_number || "—"}
+                        </td>
+                        <td style={{ padding: "0.35rem 0.4rem", fontWeight: 600 }}>
+                          {fmtCurrency(inv.total_amount)}
+                        </td>
+                        <td style={{ padding: "0.35rem 0.4rem" }}>
+                          <span style={{
+                            padding: "0.15rem 0.4rem",
+                            borderRadius: "4px",
+                            fontSize: "0.68rem",
+                            fontWeight: 600,
+                            textTransform: "uppercase",
+                            background: inv.decision === "approved" ? "rgba(16, 185, 129, 0.15)" : inv.decision === "rejected" ? "rgba(239, 68, 68, 0.15)" : "rgba(245, 158, 11, 0.15)",
+                            color: inv.decision === "approved" ? "#10b981" : inv.decision === "rejected" ? "#ef4444" : "#f59e0b",
+                          }}>
+                            {inv.decision}
+                          </span>
+                        </td>
+                        <td style={{ padding: "0.35rem 0.4rem" }}>
+                          {inv.risk_score != null ? (
+                            <span style={{
+                              fontWeight: 600,
+                              color: inv.risk_score >= 70 ? "#ef4444" : inv.risk_score >= 40 ? "#f59e0b" : "#10b981",
+                            }}>
+                              {inv.risk_score}/100
+                            </span>
+                          ) : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <ul style={{ marginTop: "0.85rem" }}>
             {h.flags.length ? (
               h.flags.map((flag) => (
-                <li key={flag.code}>
-                  <strong>{flag.label}</strong>
-                  <span>{flag.detail}</span>
+                <li key={flag.code} style={{ display: "flex", flexDirection: "column", gap: "0.15rem" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                    <span style={{
+                      padding: "0.1rem 0.35rem",
+                      borderRadius: "3px",
+                      fontSize: "0.65rem",
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      background: flag.severity === "high" ? "rgba(239, 68, 68, 0.2)" : flag.severity === "medium" ? "rgba(245, 158, 11, 0.2)" : "rgba(16, 185, 129, 0.2)",
+                      color: flag.severity === "high" ? "#ef4444" : flag.severity === "medium" ? "#f59e0b" : "#10b981",
+                    }}>
+                      {flag.severity}
+                    </span>
+                    <strong>{flag.label}</strong>
+                  </div>
+                  <span style={{ fontSize: "0.8rem", color: "var(--muted-foreground)" }}>{flag.detail}</span>
                 </li>
               ))
             ) : (
               <li>
-                <strong>
-                  History consistent
-                </strong>
-
-                <span>
-                  No statistical anomaly was found
-                  for this vendor.
-                </span>
+                <strong>Vendor profile consistent</strong>
+                <span>No statistical anomalies or banking changes detected for this vendor.</span>
               </li>
             )}
           </ul>

@@ -24,7 +24,11 @@ class HistoryAgent(BaseAgent):
             return state
         try:
             async with session_factory()() as session:
-                result = await vendor_history(session, state.extraction)
+                result = await vendor_history(
+                    session,
+                    state.extraction,
+                    document_id=state.document_id,
+                )
             state.history = result
             if result.score >= 0.7:
                 self._mark(state, AgentStatus.HIGH)
