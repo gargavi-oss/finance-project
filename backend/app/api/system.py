@@ -17,7 +17,7 @@ async def health():
     llm = LLMClient()
     return {
         "status": "ok",
-        "version": "2.0.4",
+        "version": "3.6-flash",
         "llm_provider": llm.provider,
         "llm_model": llm.model,
         "tesseract": has_tesseract(),

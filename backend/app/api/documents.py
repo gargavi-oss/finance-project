@@ -18,6 +18,7 @@ from app.config import get_settings
 from app.db.database import AuditRow, DocumentRow, session_factory
 from app.orchestration.graph import run_pipeline
 from app.schemas.models import (
+    AgentStatus,
     AuditEntry,
     DocumentDecision,
     DocumentRecord,
@@ -25,6 +26,7 @@ from app.schemas.models import (
     RunAcceptedResponse,
 )
 from app.services.fingerprint import perceptual_hash
+from app.services.pdf_raster import looks_like_pdf, rasterize_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -61,23 +63,65 @@ async def upload_document(file: UploadFile = File(...)) -> RunAcceptedResponse:
     stored_path = uploads_dir / f"{doc_id}_{safe_name}"
     stored_path.write_bytes(raw)
 
+    # PDF invoices can't be opened by the vision / OCR stack directly. Rasterise
+    # the pages to PNG up front so the rest of the pipeline only ever sees a
+    # raster image. The first page is the canonical analysis image; the original
+    # PDF is kept on disk alongside it.
+    working_path = stored_path
+    page_count = 1
+    if looks_like_pdf(stored_path, file.content_type):
+        try:
+            rendered = rasterize_pdf(stored_path, uploads_dir)
+            if rendered:
+                working_path = rendered[0]
+                page_count = len(rendered)
+                logger.info(
+                    "rasterised PDF %s -> %d page(s); using %s",
+                    stored_path.name,
+                    page_count,
+                    working_path.name,
+                )
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail="The PDF could not be rendered to images.",
+                )
+        except Exception as exc:
+            logger.exception("PDF rasterisation failed")
+            raise HTTPException(
+                status_code=422,
+                detail=f"Could not process PDF invoice: {exc}",
+            ) from exc
+
     # Compute perceptual hash up-front so the DB row is consistent even
     # before the pipeline finishes.
     try:
-        phash = perceptual_hash(stored_path)
+        phash = perceptual_hash(working_path)
     except Exception as exc:
         logger.warning("pHash failed (%s) — storing empty hash", exc)
         phash = ""
+
+    # After PDF rasterization, the working_path is a PNG even though the
+    # upload was a PDF.  Store the *actual* image type so the /file endpoint
+    # serves the correct Content-Type header.
+    actual_content_type = file.content_type or "application/octet-stream"
+    if working_path != stored_path:
+        suffix = working_path.suffix.lower()
+        if suffix == ".png":
+            actual_content_type = "image/png"
+        elif suffix in (".jpg", ".jpeg"):
+            actual_content_type = "image/jpeg"
 
     async with session_factory()() as session:
         row = DocumentRow(
             id=doc_id,
             filename=safe_name,
-            content_type=file.content_type or "application/octet-stream",
+            content_type=actual_content_type,
             size_bytes=len(raw),
             sha256=sha,
             perceptual_hash=phash,
-            image_path=str(stored_path),
+            image_path=str(working_path),
+            page_count=page_count,
             ela_overlay_path=None,
             decision=DocumentDecision.PENDING.value,
         )
@@ -87,7 +131,7 @@ async def upload_document(file: UploadFile = File(...)) -> RunAcceptedResponse:
     state = PipelineState(
         document_id=doc_id,
         filename=safe_name,
-        image_path=str(stored_path),
+        image_path=str(working_path),
     )
     queue: asyncio.Queue = asyncio.Queue()
     _RUNS[doc_id] = queue
@@ -107,27 +151,31 @@ async def _drive_pipeline(
     queue: asyncio.Queue,
 ) -> None:
     """Run the orchestrator and push events into the SSE queue."""
-    async with session_factory()() as session:
+    try:
         async for event in run_pipeline(state):
             await queue.put(event)
-            # The LangGraph runner yields copies of the state (it re-hydrates a
-            # fresh PipelineState per node), so re-materialise our local `state`
-            # from the event payload before persisting — otherwise the DB row
-            # would be written from the (empty) initial state.
             snapshot = event.get("result") or event.get("state")
             if snapshot:
                 try:
                     state = PipelineState.model_validate(snapshot)
                 except Exception:
                     pass
-            try:
-                await _persist_event(session, doc_id, state, event)
-            except Exception as exc:
-                logger.warning("persist failed: %s", exc)
-            await session.commit()
-    # Drop the queue reference after completion.
-    _RUNS.pop(doc_id, None)
-    _RUN_TASKS.pop(doc_id, None)
+            if event.get("event") in {"agent_done", "pipeline_done"}:
+                try:
+                    async with session_factory()() as session:
+                        await _persist_event(session, doc_id, state, event)
+                        await session.commit()
+                except Exception as exc:
+                    logger.warning("persist failed for doc %s: %s", doc_id, exc)
+    except Exception as exc:
+        logger.exception("pipeline driver failed: %s", exc)
+        await queue.put({"event": "error", "agent": "pipeline", "detail": str(exc)})
+        await queue.put({"event": "pipeline_done", "state": state.model_dump()})
+    finally:
+        # Keep queue in _RUNS briefly so late connecting SSE clients can drain final events
+        await asyncio.sleep(3)
+        _RUNS.pop(doc_id, None)
+        _RUN_TASKS.pop(doc_id, None)
 
 
 async def _persist_event(
@@ -147,20 +195,24 @@ async def _persist_event(
         row.invoice_number = state.extraction.invoice_number
         row.invoice_date = state.extraction.invoice_date
         row.total_amount = state.extraction.total_amount
+        row.bank_account = state.extraction.bank_account
+        row.bank_routing = state.extraction.bank_routing
     if state.forensics is not None:
         row.ela_overlay_path = state.forensics.ela_overlay_path
         row.perceptual_hash = state.forensics.perceptual_hash
+    if state.ring is not None and state.ring.layout_vector:
+        row.layout_vector = state.ring.layout_vector
     if state.verdict is not None:
         row.risk_score = state.verdict.risk_score
         row.summary = state.verdict.summary
     payload = {
-        "extraction": state.extraction.model_dump() if state.extraction else None,
-        "forensics": state.forensics.model_dump() if state.forensics else None,
-        "policy": state.policy.model_dump() if state.policy else None,
-        "history": state.history.model_dump() if state.history else None,
-        "ring": state.ring.model_dump() if state.ring else None,
-        "verdict": state.verdict.model_dump() if state.verdict else None,
-        "agent_status": state.agent_status,
+        "extraction": state.extraction.model_dump(mode="json") if state.extraction else None,
+        "forensics": state.forensics.model_dump(mode="json") if state.forensics else None,
+        "policy": state.policy.model_dump(mode="json") if state.policy else None,
+        "history": state.history.model_dump(mode="json") if state.history else None,
+        "ring": state.ring.model_dump(mode="json") if state.ring else None,
+        "verdict": state.verdict.model_dump(mode="json") if state.verdict else None,
+        "agent_status": {k: (v.value if hasattr(v, "value") else str(v)) for k, v in state.agent_status.items()},
         "errors": state.errors,
     }
     row.agent_payload = payload
@@ -212,7 +264,7 @@ async def stream_document(doc_id: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/documents/{doc_id}/file")
-async def get_document_file(doc_id: str):
+async def get_document_file(doc_id: str, download: bool = False):
     async with session_factory()() as session:
         row = (
             await session.execute(
@@ -230,28 +282,65 @@ async def get_document_file(doc_id: str):
 
     file_path = Path(row.image_path)
 
-    if not file_path.exists():
-        logger.error(
-            "Document file does not exist: %s",
-            file_path,
+    # If requested for download, prefer the original file (e.g. original PDF)
+    if download:
+        if file_path.name.endswith("_page1.png"):
+            orig_pdf = file_path.parent / f"{file_path.stem[:-6]}.pdf"
+            if orig_pdf.exists():
+                return FileResponse(
+                    path=str(orig_pdf),
+                    media_type="application/pdf",
+                    filename=row.filename,
+                    content_disposition_type="attachment",
+                )
+        return FileResponse(
+            path=str(file_path),
+            media_type="application/octet-stream",
+            filename=row.filename,
+            content_disposition_type="attachment",
         )
 
+    # For browser canvas preview (<img src="...">):
+    # If the file path is a PDF, ensure we serve a rendered PNG image of page 1
+    if file_path.suffix.lower() == ".pdf":
+        page1_png = file_path.parent / f"{file_path.stem}_page1.png"
+        if not page1_png.exists():
+            try:
+                import pymupdf
+                doc = pymupdf.open(file_path)
+                page = doc.load_page(0)
+                pix = page.get_pixmap(dpi=150)
+                pix.save(str(page1_png))
+            except Exception as exc:
+                logger.warning("Could not rasterize PDF on preview: %s", exc)
+        if page1_png.exists():
+            file_path = page1_png
+
+    if not file_path.exists() or not file_path.is_file():
+        logger.error("Document file does not exist: %s", file_path)
         raise HTTPException(
             status_code=404,
             detail="document file not found",
         )
 
-    if not file_path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail="document path is not a file",
-        )
+    _MIME_MAP = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".pdf": "application/pdf",
+    }
+    actual_type = _MIME_MAP.get(
+        file_path.suffix.lower(),
+        "image/png",
+    )
 
     return FileResponse(
         path=str(file_path),
-        media_type=row.content_type
-        or "application/octet-stream",
-        filename=row.filename,
+        media_type=actual_type,
+        filename=file_path.name,
+        content_disposition_type="inline",
     )
 
 # --------------------------------------------------------------------------- #
@@ -391,6 +480,8 @@ def _row_to_record(row: DocumentRow) -> DocumentRecord:
         invoice_number=row.invoice_number,
         invoice_date=row.invoice_date,
         total_amount=row.total_amount,
+        bank_account=row.bank_account,
+        bank_routing=row.bank_routing,
         decision=DocumentDecision(row.decision),
         risk_score=row.risk_score,
         summary=row.summary,

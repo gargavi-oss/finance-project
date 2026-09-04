@@ -1,4 +1,12 @@
-"""Forensics Agent — ELA, EXIF/metadata, font-consistency heuristics."""
+"""Forensics Agent — the six-signal multimodal tamper model.
+
+Runs the pipeline ported from
+``Aathi-27/multimodal-document-tampering-detection``: ELA, saliency
+localisation, Monte-Carlo-style uncertainty, OCR semantic conflict, OCR
+extraction confidence and spatial field overlap, fused with the reference
+weights. Classic EXIF and font-consistency heuristics run alongside and act as
+independent overrides.
+"""
 
 from __future__ import annotations
 
@@ -28,6 +36,8 @@ class ForensicsAgent(BaseAgent):
                 ela_threshold=settings.ela_tamper_threshold,
                 meta_threshold=settings.meta_anomaly_threshold,
                 font_threshold=settings.font_inconsistency_threshold,
+                # Supplies the two OCR-derived fusion signals.
+                extraction=state.extraction,
             )
             state.forensics = result
             if result.composite_score >= 0.7:

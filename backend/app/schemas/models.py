@@ -79,7 +79,11 @@ class ExtractionResult(BaseModel):
     raw_text: str = ""
     ocr_engine: str = "tesseract"
     confidence: float = 0.0
+    bank_account: Optional[str] = None
+    bank_routing: Optional[str] = None
     flagged_regions: list[BoundingBox] = Field(default_factory=list)
+    # Schema / business-rule validation (AWS IDP "blueprint" analogue).
+    completeness: Optional["CompletenessResult"] = None
 
 
 class ForensicsFlag(BaseModel):
@@ -88,6 +92,123 @@ class ForensicsFlag(BaseModel):
     severity: Severity
     detail: str
     score: float = Field(ge=0.0, le=1.0)
+
+
+# --------------------------------------------------------------------------- #
+# Multi-signal tamper model
+#
+# Ported from the reference architecture in
+#   github.com/Aathi-27/multimodal-document-tampering-detection
+# which fuses six complementary signals (ELA, Grad-CAM saliency, MC-Dropout
+# uncertainty, OCR semantic conflict, OCR confidence, spatial IoU overlap)
+# into one weighted risk score. We keep the same six-signal contract but
+# replace the TensorFlow/EfficientNetB7 classifier with deterministic,
+# dependency-free computer-vision equivalents so the model runs on CPU.
+# --------------------------------------------------------------------------- #
+
+
+class TamperHotspot(BaseModel):
+    """A localised region of the page that drives the tamper signal."""
+
+    box: BoundingBox
+    intensity: float = Field(ge=0.0, le=1.0)
+    rank: int = 1
+
+
+class SaliencyResult(BaseModel):
+    """Spatial saliency — the localisation half of the tamper model.
+
+    Analogous to ``grad_cam.py``: answers *where* on the page the model is
+    looking, and how strongly that region drives the tampering decision.
+    """
+
+    score: float = Field(ge=0.0, le=1.0)
+    peak_intensity: float = Field(ge=0.0, le=1.0)
+    concentration: float = Field(ge=0.0, le=1.0)
+    hotspots: list[TamperHotspot] = Field(default_factory=list)
+    # Per-channel mean intensity, useful for explaining *why* a page is hot.
+    channels: dict[str, float] = Field(default_factory=dict)
+    overlay_path: Optional[str] = None
+
+
+class UncertaintyResult(BaseModel):
+    """Predictive uncertainty — analogous to ``mc_dropout.py``.
+
+    MC Dropout keeps dropout active and runs N stochastic forward passes,
+    using the variance across passes to estimate epistemic uncertainty. We
+    apply the same idea at the input/encoder level: N stochastic re-encodes
+    of the page, measuring how stable the tamper score is.
+    """
+
+    passes: int = 0
+    mean_score: float = Field(ge=0.0, le=1.0)
+    stddev: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    epistemic_risk: float = Field(ge=0.0, le=1.0)
+    per_pass: list[float] = Field(default_factory=list)
+
+
+class PatchLocalizationResult(BaseModel):
+    """Spatial agreement between visual anomaly and semantic fields.
+
+    Analogous to ``patch_localization.py``: an IoU-style overlap between
+    anomaly-dense patches and the patches that actually matter (the total,
+    the date, the invoice number). Anomaly in a margin is noise; anomaly on
+    the total is fraud.
+    """
+
+    grid_rows: int = 16
+    grid_cols: int = 16
+    density_score: float = Field(0.0, ge=0.0, le=1.0)
+    overlap_score: float = Field(0.0, ge=0.0, le=1.0)
+    score: float = Field(0.0, ge=0.0, le=1.0)
+    hotspot_patch_ratio: float = Field(0.0, ge=0.0, le=1.0)
+    anomalous_patches: int = 0
+    field_patches: int = 0
+    matched_fields: list[str] = Field(default_factory=list)
+
+
+class SignalContribution(BaseModel):
+    name: str
+    label: str
+    value: float = Field(ge=0.0, le=1.0)
+    weight: float = Field(ge=0.0, le=1.0)
+    contribution: float = Field(ge=0.0, le=1.0)
+
+
+class SignalFusion(BaseModel):
+    """Weighted fusion of the six tamper signals — analogous to ``fusion.py``."""
+
+    score: float = Field(ge=0.0, le=1.0)
+    band: str = "low"  # low | medium | high
+    contributions: list[SignalContribution] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+
+
+class CompletenessIssue(BaseModel):
+    code: str
+    label: str
+    severity: Severity
+    detail: str
+    score: float = Field(ge=0.0, le=1.0)
+
+
+class CompletenessResult(BaseModel):
+    """Schema + business-rule validation of the extracted record.
+
+    Analogous to the "automated completeness and validity checks" performed by
+    the Bedrock Data Automation blueprints in the AWS IDP fraud-detection
+    guidance: verify the document matches the expected invoice schema and that
+    its own numbers are internally consistent.
+    """
+
+    required_total: int = 0
+    required_present: int = 0
+    completeness: float = Field(ge=0.0, le=1.0)
+    issues: list[CompletenessIssue] = Field(default_factory=list)
+    semantic_conflict_score: float = Field(ge=0.0, le=1.0)
+    extraction_confidence_score: float = Field(ge=0.0, le=1.0)
+    sharpness: float = Field(ge=0.0, le=1.0)
 
 
 class ForensicsResult(BaseModel):
@@ -101,6 +222,12 @@ class ForensicsResult(BaseModel):
     composite_score: float = Field(ge=0.0, le=1.0)
     flags: list[ForensicsFlag] = Field(default_factory=list)
     perceptual_hash: str
+
+    # --- multi-signal tamper model -----------------------------------------
+    saliency: Optional[SaliencyResult] = None
+    uncertainty: Optional[UncertaintyResult] = None
+    patch_localization: Optional[PatchLocalizationResult] = None
+    fusion: Optional[SignalFusion] = None
 
 
 class PolicyCitation(BaseModel):
@@ -139,12 +266,16 @@ class RingMatch(BaseModel):
     hamming_distance: int
     matched_at: datetime
     matched_vendor: Optional[str] = None
+    shared_routing: Optional[bool] = False
+    shared_routing_number: Optional[str] = None
 
 
 class RingResult(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
     matches: list[RingMatch] = Field(default_factory=list)
     total_indexed: int = 0
+    layout_vector: list[float] = Field(default_factory=list)
+    shared_routing_matches: list[RingMatch] = Field(default_factory=list)
 
 
 class AgentFinding(BaseModel):
@@ -187,6 +318,8 @@ class DocumentRecord(BaseModel):
     invoice_number: Optional[str] = None
     invoice_date: Optional[str] = None
     total_amount: Optional[float] = None
+    bank_account: Optional[str] = None
+    bank_routing: Optional[str] = None
     decision: DocumentDecision = DocumentDecision.PENDING
     risk_score: Optional[int] = None
     summary: Optional[str] = None
@@ -254,3 +387,13 @@ def recommendation_for_score(score: int) -> DocumentDecision:
     if score >= 50:
         return DocumentDecision.ESCALATED
     return DocumentDecision.APPROVED
+
+
+def risk_band_for_score(score: float) -> str:
+    """Map a 0-1 fused score to the Low / Medium / High bands used by the
+    reference fusion module (``medium`` starts at 0.35, ``high`` at 0.70)."""
+    if score >= 0.70:
+        return "high"
+    if score >= 0.35:
+        return "medium"
+    return "low"

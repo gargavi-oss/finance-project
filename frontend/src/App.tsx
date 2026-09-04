@@ -16,8 +16,8 @@ export default function App() {
         <Route path="/login" element={<AuthPage mode="login" />} />
         <Route path="/signup" element={<AuthPage mode="signup" />} />
         <Route element={<ProtectedRoute />}>
-          <Route path="/app" element={<Navigate to="/app/live" replace />} />
           <Route path="/app" element={<Shell><Outlet /></Shell>}>
+            <Route index element={<Navigate to="/app/live" replace />} />
             <Route path="live" element={<LiveVerification />} />
             <Route path="verdict" element={<VerdictReport />} />
             <Route path="audit" element={<AuditLog />} />

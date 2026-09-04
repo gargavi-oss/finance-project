@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # Gemini is the primary provider. OpenAI / Anthropic remain available as
     # optional fallbacks if a Gemini key is not configured.
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.6-flash"
+    gemini_model: str = "gemini-2.0-flash"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     anthropic_api_key: str = ""

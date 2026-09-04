@@ -32,6 +32,7 @@ procurement budget, an IT team, or an ERP integration.
 | Backend | Python 3.11+ · FastAPI · LangGraph orchestration |
 | OCR | Tesseract 5 (with a deterministic demo fallback for bundled samples) |
 | Forensics | OpenCV + Pillow + imagehash (ELA, EXIF, font variance, pHash) |
+| LLM | **Gemini (primary)** via `langchain-google-genai`; OpenAI / Anthropic optional fallbacks |
 | RAG | scikit-learn TF-IDF over the company expense policy |
 | Database | SQLite (via SQLAlchemy 2 async) |
 | Live trace | Server-Sent Events |
@@ -42,24 +43,28 @@ procurement budget, an IT team, or an ERP integration.
 
 ### 1. Prerequisites
 
-* **Python 3.11+** (3.12 recommended)
+* **Python 3.11+** (3.12 recommended) · **[uv](https://docs.astral.sh/uv/)** package manager
 * **Node.js 18+** (20+ recommended)
-* (Optional) **Tesseract 5** — needed only if you upload real receipt scans.
-  macOS: `brew install tesseract` · Ubuntu: `sudo apt install tesseract-ocr`
-* (Optional) **OpenAI API key** — leave empty to run in deterministic demo mode.
+* **(Optional) Tesseract 5** — required to OCR *real* scanned invoices and PDFs.
+  macOS: `brew install tesseract` · Ubuntu: `sudo apt install tesseract-ocr`.
+  The bundled demo samples carry an embedded ground-truth payload, so the demo
+  runs without it.
+* **(Optional) Gemini API key** — set `GEMINI_API_KEY` in `.env` to use Gemini
+  (the primary LLM) for the Verdict / Policy synthesis. Leave it empty to run
+  in deterministic demo mode.
 
 ### 2. Backend
 
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+uv venv && source .venv/bin/activate
+uv sync                         # install dependencies (incl. PyMuPDF for PDFs)
 
 # Generate sample invoices (4 PNGs in data/invoices/)
 python -m scripts.generate_samples --out ./data/invoices
 
 # Run the server
-cp .env.example .env            # then edit if needed
+cp .env.example .env            # set GEMINI_API_KEY to use the Gemini agent
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -90,14 +95,21 @@ port 8000 — no CORS or extra config required.
 
 1. Open `http://localhost:5173`
 2. From **Live Verification**, drag any of the bundled samples from
-   `backend/data/invoices/`:
-   * `INV-2026-00181.png` — clean invoice, should pass
-   * `INV-2026-04182.png` — tampered total, ELA + Forensics should fire
+   `backend/data/invoices/`, or upload your own **PDF / PNG / JPEG** invoice:
+   * `INV-2026-00181.png` — clean invoice, should pass (APPROVED, low risk)
+   * `INV-2026-04182.png` — tampered total; the arithmetic contradiction
+     (printed total ≠ line items) is flagged and the verdict is **REJECTED**
    * `ring_alpha_supplies.png` & `ring_beta_office.png` — submit both;
      the Ring-Detection agent should link them
 3. Watch the six-agent pipeline run live in the right panel.
 4. Click **Run verification** to open the **Verdict Report**.
 5. Hit **Approve / Escalate / Reject** to log a decision to the audit trail.
+
+> Why DocForensic AI beats OCR tools, vision LLMs, ERPs and manual review is
+> explained on the landing page ("Why we win" section) and in the proposal. In
+> short: every other approach is blind to a number that was edited *after* the
+> invoice was issued — our completeness/validity check plus pixel forensics and
+> cross-document ring detection catch it.
 
 ---
 
@@ -189,9 +201,15 @@ For each agent the API publishes:
 * the structured evidence the UI renders (flagged ELA region, cited policy
   clause, vendor history stats, ring-match table)
 
-The Verdict agent's headline summary is LLM-generated when `OPENAI_API_KEY`
-or `ANTHROPIC_API_KEY` is set; otherwise a deterministic template produces
-a faithful 3-5 sentence synthesis.
+The Verdict agent's headline summary is LLM-generated when `GEMINI_API_KEY`
+is set (Gemini is the primary provider); `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
+are optional fallbacks. With no key configured, a deterministic template
+produces a faithful 3-5 sentence synthesis.
+
+**PDF invoices are supported.** Any uploaded `.pdf` is rasterised to PNG with
+PyMuPDF before OCR / forensics / perceptual hashing run, so the rest of the
+pipeline treats it exactly like an uploaded image. Install Tesseract to read
+the text of real (non-sample) PDFs.
 
 ---
 
@@ -233,6 +251,17 @@ A few decisions worth pointing out for the demo:
 * **Frontend is dark-theme by default with orange/red accent** to match the
   designed UI from the proposal. No external icon library — every glyph is
   hand-drawn SVG to keep the bundle small.
+* **Completeness / validity is a primary signal, not just one of six.** A total
+  that does not reconcile with its own line items (the classic "edit the number
+  and re-export" forgery) is, by itself, high-confidence tamper evidence, so the
+  Forensics score is driven by it directly and the Verdict floors the risk at 75
+  whenever a material total mismatch is present. This mirrors the AWS IDP
+  guidance's "automated completeness and validity checks" and is more reliable
+  on these samples than Error Level Analysis alone, which is weak against
+  re-exported forgeries.
+* **PDF ingestion is transparent.** `app/services/pdf_raster.py` rasterises each
+  PDF page to PNG with PyMuPDF; only the first page is analysed (invoices are
+  single-page) and the original PDF is kept alongside the render.
 
 ---
 

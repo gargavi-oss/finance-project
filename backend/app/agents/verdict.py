@@ -54,6 +54,18 @@ class VerdictAgent(BaseAgent):
                 findings[a].score * w for a, w in weights.items()
             )
             risk_score = int(round(weighted * 100))
+
+            # Deterministic escalation. An internal arithmetic contradiction
+            # (the printed total does not reconcile with the line items) is, by
+            # itself, strong evidence of post-issuance editing. Such a structural
+            # fault is surfaced for human review regardless of whether the other
+            # agents happened to corroborate it — it must never be averaged away.
+            if state.forensics is not None and any(
+                f.code == "semantic_conflict" and f.severity == Severity.HIGH
+                for f in state.forensics.flags
+            ):
+                risk_score = max(risk_score, 75)
+
             recommendation = recommendation_for_score(risk_score)
 
             summary = await self._synthesise(state, findings, risk_score)
@@ -85,9 +97,6 @@ class VerdictAgent(BaseAgent):
             state.errors[self.name.value] = str(exc)
             self._mark(state, AgentStatus.ERROR)
         return state
-
-    # ------------------------------------------------------------------- #
-
     def _collect_findings(self, state: PipelineState) -> dict[AgentName, AgentFinding]:
         findings: dict[AgentName, AgentFinding] = {}
 
@@ -186,10 +195,120 @@ class VerdictAgent(BaseAgent):
             f"Agent findings:\n"
             + "\n".join(f"- {a.value}: {f.headline} (score={f.score:.2f})" for a, f in findings.items())
             + f"\n\nForensic flags:\n{flags}\n\n"
+            + f"Multimodal signal fusion:\n{self._fusion_text(state)}\n\n"
+            + f"Cross-modal consistency check:\n{self._cross_modal_text(state)}\n\n"
             + "Write a 3-5 sentence plain-English summary explaining the verdict "
-            "and the evidence behind it."
+            "and the evidence behind it. Where two sources disagree — for example "
+            "when the printed total conflicts with the line items, or when a "
+            "clean-looking page carries tamper saliency on the total field — call "
+            "that contradiction out explicitly."
         )
         return await self._llm.chat(system, user)
+
+    @staticmethod
+    def _fusion_text(state: PipelineState) -> str:
+        """Render the six-signal fusion breakdown for the LLM and the audit trail."""
+        fusion = state.forensics.fusion if state.forensics else None
+        if fusion is None:
+            return "  (signal fusion unavailable)"
+        lines = [
+            f"  • {c.label}: {c.value:.2f} x weight {c.weight:.2f} "
+            f"= {c.contribution:.3f}"
+            for c in fusion.contributions
+        ]
+        lines.append(f"  • fused score {fusion.score:.3f} -> band '{fusion.band}'")
+        if fusion.missing:
+            lines.append(f"  • unavailable signals: {', '.join(fusion.missing)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _cross_modal_text(state: PipelineState) -> str:
+        """Compare what the document *says* against what the evidence *shows*.
+
+        This is the DocForensic equivalent of the step the AWS IDP guidance
+        delegates to a Bedrock foundation model: consolidate the OCR text, the
+        image-analysis results and the vendor context, then look for
+        contradictions between them. We assemble the contradictions
+        deterministically here so the LLM is asked to interpret evidence rather
+        than to invent it.
+        """
+        lines: list[str] = []
+        extraction = state.extraction
+        forensics = state.forensics
+        history = state.history
+
+        if extraction is None:
+            return "  (no extracted record to cross-check)"
+
+        lines.append(
+            f"  • Document states: vendor={extraction.vendor!r}, "
+            f"invoice={extraction.invoice_number!r}, "
+            f"date={extraction.invoice_date!r}, "
+            f"total={extraction.total_amount!r} {extraction.currency}"
+        )
+
+        line_sum = sum(float(i.amount or 0.0) for i in extraction.line_items)
+        if extraction.line_items and extraction.total_amount is not None:
+            gap = line_sum - float(extraction.total_amount)
+            if abs(gap) > 0.02:
+                lines.append(
+                    f"  • CONTRADICTION: line items sum to {line_sum:.2f} but the "
+                    f"printed total is {float(extraction.total_amount):.2f} "
+                    f"(gap {gap:+.2f})."
+                )
+
+        if forensics is not None:
+            local = forensics.patch_localization
+            if local is not None and local.matched_fields:
+                fields = ", ".join(f.replace("_", " ") for f in local.matched_fields)
+                lines.append(
+                    f"  • Visual anomaly overlaps the {fields} "
+                    f"(overlap {local.overlap_score:.2f})."
+                )
+            if forensics.saliency is not None:
+                band = forensics.fusion.band if forensics.fusion else "n/a"
+                lines.append(
+                    f"  • Tamper saliency {forensics.saliency.score:.2f} "
+                    f"(fused band '{band}')."
+                )
+            if forensics.uncertainty is not None:
+                lines.append(
+                    f"  • Detector stability: confidence "
+                    f"{forensics.uncertainty.confidence:.2f} "
+                    f"across {forensics.uncertainty.passes} passes."
+                )
+            if forensics.composite_score < 0.4 and (
+                forensics.saliency is not None and forensics.saliency.score >= 0.55
+            ):
+                lines.append(
+                    "  • CONTRADICTION: the page looks forensically clean overall "
+                    "but saliency is concentrated on a single region."
+                )
+
+        if (
+            history is not None
+            and extraction.total_amount is not None
+            and history.vendor_prior_submissions
+            and history.vendor_max_amount
+        ):
+            ratio = float(extraction.total_amount) / max(history.vendor_max_amount, 1e-6)
+            if ratio > 1.5:
+                lines.append(
+                    f"  • This claim is {ratio:.1f}x the vendor's previous "
+                    f"maximum of {history.vendor_max_amount:.2f}."
+                )
+        if history is not None and any(f.code == "bank_account_changed" for f in history.flags):
+            lines.append(
+                f"  • CRITICAL PAYMENT RISK: Known vendor '{extraction.vendor}' suddenly changed its designated bank account."
+            )
+
+        if state.ring is not None and state.ring.shared_routing_matches:
+            first = state.ring.shared_routing_matches[0]
+            lines.append(
+                f"  • SHELL VENDOR RING: Shares identical bank routing number with vendor '{first.matched_vendor}'."
+            )
+
+        return "\n".join(lines) or "  (no cross-modal contradictions detected)"
 
     @staticmethod
     def _collect_flag_text(state: PipelineState) -> str:
@@ -203,9 +322,15 @@ class VerdictAgent(BaseAgent):
         if state.history:
             for flag in state.history.flags:
                 bits.append(f"  • [{flag.severity.value}] {flag.label}: {flag.detail}")
-        if state.ring and state.ring.matches:
+        if state.ring:
+            if state.ring.shared_routing_matches:
+                for m in state.ring.shared_routing_matches[:2]:
+                    bits.append(
+                        f"  • [CRITICAL] Shell vendor ring: identical routing ({m.shared_routing_number}) with vendor '{m.matched_vendor}'"
+                    )
             for m in state.ring.matches[:3]:
-                bits.append(f"  • [ring] hamming={m.hamming_distance} → {m.matched_filename}")
+                if not m.shared_routing:
+                    bits.append(f"  • [ring] Cloned template (dist={m.hamming_distance}) → {m.matched_vendor or m.matched_filename}")
         return "\n".join(bits) or "  (no specific flags)"
 
     @staticmethod
@@ -240,6 +365,10 @@ class VerdictAgent(BaseAgent):
             return "Vendor not previously seen"
         if not hr.flags:
             return "Vendor has consistent submission history"
+        # Prioritize bank account change over amount/frequency spikes
+        for f in hr.flags:
+            if f.code == "bank_account_changed":
+                return "CRITICAL: Sudden bank account change detected"
         return hr.flags[0].label
 
     @staticmethod
@@ -247,5 +376,8 @@ class VerdictAgent(BaseAgent):
         rr = state.ring
         if rr is None or not rr.matches:
             return "No cross-document fingerprint match"
+        if rr.shared_routing_matches:
+            first = rr.shared_routing_matches[0]
+            return f"Syndicate Alert: Shared routing with '{first.matched_vendor}'"
         n = len(rr.matches)
-        return f"Fingerprint match across {n} document{'s' if n != 1 else ''} from separate vendors"
+        return f"Cloned template match across {n} document{'s' if n != 1 else ''} from separate vendors"

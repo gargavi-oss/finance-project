@@ -40,8 +40,8 @@ class LLMClient:
                     google_api_key=settings.gemini_api_key,
                     model=settings.gemini_model,
                     temperature=0.1,
-                    max_retries=1,
-                    request_timeout=60,
+                    max_retries=0,
+                    timeout=6.0,
                 )
                 self._provider = "gemini"
                 self._model = settings.gemini_model
@@ -56,6 +56,8 @@ class LLMClient:
                     api_key=settings.openai_api_key,
                     model=settings.openai_model,
                     temperature=0.1,
+                    max_retries=0,
+                    timeout=6.0,
                 )
                 self._provider = "openai"
                 self._model = settings.openai_model
@@ -70,6 +72,8 @@ class LLMClient:
                     api_key=settings.anthropic_api_key,
                     model=settings.anthropic_model,
                     temperature=0.1,
+                    max_retries=0,
+                    timeout=6.0,
                 )
                 self._provider = "anthropic"
                 self._model = settings.anthropic_model
@@ -89,12 +93,14 @@ class LLMClient:
         if self._client is None:
             return _demo_chat(system, user)
         try:
-            response = await self._client.ainvoke(
+            import asyncio
+            coro = self._client.ainvoke(
                 [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ]
             )
+            response = await asyncio.wait_for(coro, timeout=6.0)
             return response.content if hasattr(response, "content") else str(response)
         except Exception as exc:
             logger.warning("LLM call failed (%s), returning demo synthesis", exc)
@@ -102,7 +108,101 @@ class LLMClient:
 
 
 def _demo_chat(system: str, user: str) -> str:
-    """Deterministic, dependency-free synthesis. Output shaped by the prompt."""
-    return (
-        "[demo LLM] " + (user.strip()[:1200])
-    )
+    """Deterministic, dependency-free synthesis.
+
+    Parses the structured prompt to extract the risk score and agent findings,
+    then generates a clean, professional verdict summary without leaking any
+    raw prompt text or instructions.
+    """
+    import re as _re
+
+    # Extract risk score.
+    risk_match = _re.search(r"Risk score:\s*(\d+)/100", user)
+    risk_score = int(risk_match.group(1)) if risk_match else 50
+
+    # Extract filename.
+    file_match = _re.search(r"Document:\s*(.+?)(?:\n|$)", user)
+    filename = file_match.group(1).strip() if file_match else "the submitted document"
+
+    # Extract agent findings.
+    findings: list[tuple[str, str, float]] = []
+    for m in _re.finditer(
+        r"- (\w+):\s*(.+?)\s*\(score=([\d.]+)\)", user
+    ):
+        findings.append((m.group(1), m.group(2).strip(), float(m.group(3))))
+
+    # Extract forensic flags.
+    flags: list[str] = []
+    for m in _re.finditer(r"\[(?:HIGH|MEDIUM|LOW)\]\s*(.+?)(?:\n|$)", user):
+        flags.append(m.group(1).strip())
+
+    # Extract contradictions.
+    contradictions: list[str] = []
+    for m in _re.finditer(r"CONTRADICTION:\s*(.+?)(?:\n|$)", user):
+        contradictions.append(m.group(1).strip())
+
+    # Build a professional summary.
+    parts: list[str] = []
+
+    if risk_score >= 75:
+        parts.append(
+            f"The analysis of {filename} has identified material fraud indicators "
+            f"requiring immediate intervention, with a composite risk score of {risk_score}/100."
+        )
+    elif risk_score >= 50:
+        parts.append(
+            f"The analysis of {filename} has raised concerns that warrant a focused "
+            f"human review, with a composite risk score of {risk_score}/100."
+        )
+    else:
+        parts.append(
+            f"The analysis of {filename} indicates a low-risk submission consistent "
+            f"with legitimate documentation, scoring {risk_score}/100."
+        )
+
+    # Summarise key findings.
+    high_findings = [
+        (name, headline) for name, headline, score in findings if score >= 0.5
+    ]
+    low_findings = [
+        (name, headline) for name, headline, score in findings if score < 0.5
+    ]
+
+    if high_findings:
+        agents_text = ", ".join(
+            f"the {name} agent ({headline})" for name, headline in high_findings
+        )
+        parts.append(f"Key signals were raised by {agents_text}.")
+
+    if contradictions:
+        parts.append(
+            "Cross-modal analysis revealed " +
+            "; ".join(c.rstrip(".") for c in contradictions[:2]) + "."
+        )
+
+    if flags and risk_score >= 50:
+        flag_text = "; ".join(f.split(":")[0].strip() for f in flags[:3])
+        parts.append(f"Forensic flags include: {flag_text}.")
+
+    if low_findings and risk_score < 50:
+        parts.append(
+            "All evidence agents completed their review without identifying "
+            "material anomalies or policy violations."
+        )
+
+    if risk_score >= 75:
+        parts.append(
+            "This case should be escalated for detailed manual review before "
+            "any payment is authorised."
+        )
+    elif risk_score >= 50:
+        parts.append(
+            "A reviewer should examine the flagged areas before making a "
+            "final disposition."
+        )
+    else:
+        parts.append(
+            "The document may proceed through the standard approval workflow."
+        )
+
+    return " ".join(parts)

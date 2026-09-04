@@ -65,6 +65,21 @@ export interface Extraction {
   confidence: number;
 }
 
+export interface TamperHotspot {
+  box: { x: number; y: number; width: number; height: number };
+  intensity: number;
+  rank: number;
+}
+
+export interface SaliencyResult {
+  score: number;
+  peak_intensity: number;
+  concentration: number;
+  hotspots: TamperHotspot[];
+  channels: Record<string, number>;
+  overlay_path: string | null;
+}
+
 export interface Forensics {
   ela_score: number;
   ela_suspicious_ratio: number;
@@ -76,6 +91,10 @@ export interface Forensics {
   composite_score: number;
   flags: Array<{ code: string; label: string; severity: string; detail: string; score: number }>;
   perceptual_hash: string;
+  saliency?: SaliencyResult | null;
+  uncertainty?: { passes: number; mean_score: number; stddev: number; confidence: number; epistemic_risk: number } | null;
+  patch_localization?: { score: number; overlap_score: number; matched_fields: string[] } | null;
+  fusion?: { score: number; contributions: Array<{ name: string; raw: number; weighted: number }> } | null;
 }
 
 export interface Policy {
@@ -241,13 +260,8 @@ export function fileUrl(
     return path;
   }
 
-  const marker = "/data/";
-  const idx = path.lastIndexOf(marker);
-
-  const relativePath =
-    idx >= 0
-      ? path.slice(idx)
-      : `/data/${path.replace(/^\/+/, "")}`;
+  const clean = path.replace(/^\/+/, "");
+  const relativePath = clean.startsWith("data/") ? `/${clean}` : `/data/${clean}`;
 
   return `${BASE}${relativePath}`;
 }

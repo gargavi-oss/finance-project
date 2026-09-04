@@ -15,11 +15,11 @@ export default function LandingPage() {
     <div className="marketing-shell">
       <header className="marketing-nav">
         <Brand />
-        <nav aria-label="Primary navigation">
-          <a href="#system">The system</a>
-          <a href="#workflow">Workflow</a>
-          <a href="#proof">Why Nexora</a>
-        </nav>
+          <nav aria-label="Primary navigation">
+            <a href="#system">The system</a>
+            <a href="#why">Why we win</a>
+            <a href="#workflow">Workflow</a>
+          </nav>
         <div className="marketing-actions">
           <Link className="button button-quiet" to="/login">Sign in</Link>
           <Link className="button button-primary" to="/signup">Create workspace</Link>
@@ -96,6 +96,65 @@ export default function LandingPage() {
                 <span className="agent-arrow" aria-hidden="true">↗</span>
               </article>
             ))}
+          </div>
+        </section>
+
+        <section className="why-section" id="why">
+          <div className="section-intro">
+            <div className="eyebrow"><span /> Why DocForensic AI wins</div>
+            <h2>Every other approach is blind to the edit.</h2>
+            <p>The tools finance teams already use each miss the same thing — the moment a number on the page is changed after the invoice was issued. Here is exactly where they fail, and how we catch it.</p>
+          </div>
+
+          <div className="failure-grid">
+            <article className="failure-card">
+              <div className="failure-head">
+                <span className="failure-tool">Traditional OCR &amp; Document AI</span>
+                <span className="failure-tag">Semantic Blindness</span>
+              </div>
+              <div className="failure-row"><b>Core failure</b><span>Reads text but cannot tell a re-typed total from a genuine one. No pixel forensics — the number is taken as ground truth.</span></div>
+              <div className="failure-row"><b>The exploit</b><span className="exploit">Edit the figure, re-export the file, and OCR reads the forged number as if it were original.</span></div>
+            </article>
+
+            <article className="failure-card">
+              <div className="failure-head">
+                <span className="failure-tool">Generative AI &amp; Vision LLMs</span>
+                <span className="failure-tag">Patch Downsampling</span>
+              </div>
+              <div className="failure-row"><b>Core failure</b><span>Downsample the image before they "see" it. A spliced total is a tiny patch that falls below their resolution — and they hallucinate plausibility.</span></div>
+              <div className="failure-row"><b>The exploit</b><span className="exploit">Subtle edits sit under their visual floor, so the model confidently "confirms" the forged amount.</span></div>
+            </article>
+
+            <article className="failure-card">
+              <div className="failure-head">
+                <span className="failure-tool">ERP &amp; Rule Engines</span>
+                <span className="failure-tag">Ring Blindness</span>
+              </div>
+              <div className="failure-row"><b>Core failure</b><span>Each invoice is assessed in isolation. No cross-document fingerprint, so the same forgery resubmitted under a different vendor name is invisible.</span></div>
+              <div className="failure-row"><b>The exploit</b><span className="exploit">Submit one tampered template across many fake vendors — every copy passes on its own.</span></div>
+            </article>
+
+            <article className="failure-card">
+              <div className="failure-head">
+                <span className="failure-tool">Manual Human Auditing</span>
+                <span className="failure-tag">Invisibility</span>
+              </div>
+              <div className="failure-row"><b>Core failure</b><span>No human can see re-compression residue or recall every prior submission. At volume, attention is the bottleneck.</span></div>
+              <div className="failure-row"><b>The exploit</b><span className="exploit">Low-value, high-volume claims blend into the queue and slip through unreviewed.</span></div>
+            </article>
+          </div>
+
+          <div className="why-summary">
+            <div className="eyebrow"><span /> The difference</div>
+            <h3>DocForensic AI treats the document as evidence, not text.</h3>
+            <ul>
+              <li><span><b>Pixel forensics</b> — ELA, metadata and saliency catch the re-encode, not just the words.</span></li>
+              <li><span><b>Completeness checks</b> — a total that doesn't reconcile with its line items is flagged on its own.</span></li>
+              <li><span><b>Ring detection</b> — perceptual-hash fingerprints link the same forgery across vendors.</span></li>
+              <li><span><b>Cross-modal checks</b> — printed total vs computed total, surfaced as a contradiction.</span></li>
+              <li><span><b>Explainable score</b> — every verdict cites the agents and regions behind it.</span></li>
+              <li><span><b>Human in the loop</b> — the agent recommends; your analyst decides and the audit logs it.</span></li>
+            </ul>
           </div>
         </section>
 

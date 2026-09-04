@@ -43,11 +43,15 @@ class DocumentRow(Base):
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     perceptual_hash: Mapped[str] = mapped_column(String(32), index=True)
     image_path: Mapped[str] = mapped_column(String(512))
+    page_count: Mapped[int] = mapped_column(Integer, default=1)
     ela_overlay_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     vendor: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     invoice_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     invoice_date: Mapped[str | None] = mapped_column(String(32), nullable=True)
     total_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bank_account: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bank_routing: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    layout_vector: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
     decision: Mapped[str] = mapped_column(String(16), default="pending")
     risk_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -100,6 +104,19 @@ _SessionLocal = async_sessionmaker(_engine, expire_on_commit=False, class_=Async
 async def init_db() -> None:
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Backfill newly-added columns on databases created by older versions.
+        # create_all() does not ALTER existing tables, so add the column
+        # defensively and ignore the error if it is already present.
+        for col in (
+            "page_count INTEGER NOT NULL DEFAULT 1",
+            "bank_account VARCHAR(64)",
+            "bank_routing VARCHAR(64)",
+            "layout_vector JSON",
+        ):
+            try:
+                await conn.exec_driver_sql(f"ALTER TABLE documents ADD COLUMN {col}")
+            except Exception:
+                pass
 
 
 def session_factory() -> async_sessionmaker[AsyncSession]:

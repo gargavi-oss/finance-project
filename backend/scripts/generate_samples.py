@@ -28,6 +28,11 @@ from PIL.PngImagePlugin import PngInfo
 
 logger = logging.getLogger(__name__)
 
+# Compression history of a generated invoice. SCAN_QUALITY models the capture
+# device, EXPORT_QUALITY the file the vendor actually emails you.
+SCAN_QUALITY = 75
+EXPORT_QUALITY = 92
+
 
 def _load_font(size: int = 22) -> ImageFont.ImageFont:
     for path in (
@@ -137,37 +142,67 @@ def _draw_invoice(
         draw.rectangle([(55, 196), (680, 238)], fill=(255, 255, 255))
         draw.text((60, 200), f"Invoice #: {invoice_number}", fill=(40, 40, 40), font=body_font)
 
-    # Encode as JPEG to make ELA meaningful (and to allow reuse as a template).
+    # Encode as JPEG. SCAN_QUALITY simulates the capture device (a phone photo
+    # or a flatbed scan); EXPORT_QUALITY is what the file is finally stored at.
+    # The two-stage history is what gives Error Level Analysis something to
+    # measure, and it is how real invoices end up looking.
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=92)
+    img.save(buf, "JPEG", quality=SCAN_QUALITY)
     jpeg_bytes = buf.getvalue()
 
     img_out = Image.open(io.BytesIO(jpeg_bytes)).convert("RGB")
 
+    # The total the document actually *shows*. For a tampered invoice this is
+    # the edited figure — the value OCR would read off the page, and the value
+    # that therefore no longer reconciles with the line items.
+    printed_total = total
+
     if tampering_seed is not None:
         rng = random.Random(tampering_seed)
-        draw2 = ImageDraw.Draw(img_out)
-        new_total = total + rng.randint(8000, 24000)
-        # Repaint the total line in a slightly different font weight.
-        draw2.rectangle([(1020, y + 5), (W - 60, y + 60)], fill=(255, 255, 255))
-        draw2.text((1040, y + 10), f"${new_total:,.2f}", fill=accent, font=mono_total_font)
-        # Re-save at lower quality to leave a JPEG fingerprint trail.
-        buf2 = io.BytesIO()
-        img_out.save(buf2, "JPEG", quality=78)
-        img_out = Image.open(io.BytesIO(buf2.getvalue())).convert("RGB")
+        printed_total = total + rng.randint(8000, 24000)
 
-    # Embed the demo payload in EXIF.
+        # Blank the entire total row — rule, label and figure — and redraw it.
+        #
+        # The surrounding page has already been through one JPEG encode at
+        # SCAN_QUALITY. The replacement glyphs have not. Re-saving at the higher
+        # EXPORT_QUALITY therefore leaves the pasted band with a genuinely
+        # different compression history than its host, which is precisely the
+        # artefact Error Level Analysis detects. (The previous implementation
+        # re-saved the whole page at a *lower* quality instead, re-compressing
+        # everything uniformly and leaving no localised trace at all.)
+        draw2 = ImageDraw.Draw(img_out)
+        draw2.rectangle([(740, y - 16), (W - 60, y + 62)], fill=(255, 255, 255))
+        draw2.line([(760, y - 10), (W - 60, y - 10)], fill=(220, 220, 220), width=1)
+        draw2.text((760, y + 10), "Total Due:", fill=(40, 40, 40), font=body_font)
+        draw2.text(
+            (1040, y + 10),
+            f"${printed_total:,.2f}",
+            fill=accent,
+            font=mono_total_font,
+        )
+
+    # Final export.
+    buf2 = io.BytesIO()
+    img_out.save(buf2, "JPEG", quality=EXPORT_QUALITY)
+    final_jpeg = buf2.getvalue()
+    img_out = Image.open(io.BytesIO(final_jpeg)).convert("RGB")
+
+    # Embed the demo payload in EXIF. This stands in for OCR output, so it must
+    # report what is printed on the page — not what the invoice originally said.
     payload = {
         "vendor": vendor,
         "invoice_number": invoice_number,
         "invoice_date": invoice_date,
-        "total_amount": total,
+        "total_amount": printed_total,
         "currency": "USD",
         "line_items": [
             {"description": d, "quantity": q, "unit_price": u, "amount": a}
             for d, q, u, a in line_items
         ],
-        "raw_text": f"{vendor}\nINVOICE {invoice_number}\nDate {invoice_date}\nTotal ${total:,.2f}",
+        "raw_text": (
+            f"{vendor}\nINVOICE {invoice_number}\nDate {invoice_date}\n"
+            f"Total ${printed_total:,.2f}"
+        ),
     }
     exif_bytes = _build_exif_with_payload(payload)
     # PNG does not reliably round-trip EXIF via PIL, so we also stash the demo
@@ -179,7 +214,9 @@ def _draw_invoice(
     meta.add_text("dfai_payload", payload_str)
     img_out.save(out_path, "PNG", exif=exif_bytes, pnginfo=meta)
     logger.info("wrote %s", out_path)
-    return jpeg_bytes
+    # Return the *final* export so a ring variant can be drawn on top of the
+    # exact image the first vendor submitted.
+    return final_jpeg
 
 
 def _build_exif_with_payload(payload: dict) -> bytes:

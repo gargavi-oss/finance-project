@@ -19,17 +19,16 @@ class RingDetectionAgent(BaseAgent):
 
     async def run(self, state: PipelineState) -> PipelineState:
         self._mark(state, AgentStatus.RUNNING)
-        if state.forensics is None:
-            state.errors[self.name.value] = "forensics missing"
-            self._mark(state, AgentStatus.ERROR)
-            return state
         try:
             settings = get_settings()
+            phash = state.forensics.perceptual_hash if state.forensics else None
             async with session_factory()() as session:
                 result = await search_ring(
                     session,
                     document_id=state.document_id,
-                    perceptual_hash=state.forensics.perceptual_hash,
+                    image_path=state.image_path,
+                    extraction=state.extraction,
+                    perceptual_hash_str=phash,
                     threshold=settings.ring_hamming_threshold,
                 )
             state.ring = result

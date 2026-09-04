@@ -116,6 +116,57 @@ async def vendor_history(
             )
             score = max(score, 0.5)
 
+    # Bank account change detection (Vendor Intelligence Agent)
+    curr_bank_account = (extraction.bank_account or "").strip()
+    curr_bank_routing = (extraction.bank_routing or "").strip()
+
+    if curr_bank_account:
+        prev_accounts = [
+            r.bank_account.strip()
+            for r in rows
+            if r.bank_account and r.bank_account.strip()
+        ]
+        if prev_accounts and curr_bank_account not in prev_accounts:
+            prev_acc = prev_accounts[0]
+            masked_prev = f"...{prev_acc[-4:]}" if len(prev_acc) >= 4 else prev_acc
+            masked_curr = f"...{curr_bank_account[-4:]}" if len(curr_bank_account) >= 4 else curr_bank_account
+            flags.append(
+                HistoryFlag(
+                    code="bank_account_changed",
+                    label="Sudden bank account change",
+                    severity=Severity.HIGH,
+                    detail=(
+                        f"Vendor '{vendor}' historically requested payment to bank account {masked_prev}, "
+                        f"but this submission specifies a new account {masked_curr}. "
+                        "Sudden bank account changes on established vendors indicate high risk of "
+                        "vendor email compromise (BEC) or payment redirection fraud."
+                    ),
+                    score=0.88,
+                )
+            )
+            score = max(score, 0.88)
+
+    if curr_bank_routing:
+        prev_routings = [
+            r.bank_routing.strip()
+            for r in rows
+            if r.bank_routing and r.bank_routing.strip()
+        ]
+        if prev_routings and curr_bank_routing not in prev_routings:
+            flags.append(
+                HistoryFlag(
+                    code="bank_routing_changed",
+                    label="Bank routing number changed",
+                    severity=Severity.HIGH,
+                    detail=(
+                        f"Vendor '{vendor}' bank routing/IFSC changed from {prev_routings[0]} "
+                        f"to {curr_bank_routing}. Verify with vendor via out-of-band communication."
+                    ),
+                    score=0.80,
+                )
+            )
+            score = max(score, 0.80)
+
     return HistoryResult(
         score=score,
         vendor_prior_submissions=n,

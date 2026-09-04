@@ -136,6 +136,26 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .marketing-footer p { text-align: center; }
 .marketing-footer > span { text-align: right; }
 
+/* Why DocForensic AI Wins — competitive failure-mode comparison */
+.why-section { max-width: 1320px; margin: 0 auto; padding: 120px 44px; }
+.failure-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 46px; }
+.failure-card { border: 1px solid var(--line); border-radius: 14px; padding: 26px 26px 22px; background: rgba(255,255,255,.5); display: grid; gap: 12px; transition: border-color 180ms ease, transform 180ms ease; }
+.failure-card:hover { border-color: var(--line-strong); transform: translateY(-2px); }
+.failure-card .failure-head { display: flex; align-items: baseline; gap: 12px; }
+.failure-card .failure-tool { font: 700 16px/1.1 "Fraunces", serif; letter-spacing: -.03em; }
+.failure-card .failure-tag { font: 700 10px "JetBrains Mono", monospace; text-transform: uppercase; letter-spacing: .12em; color: #b3412b; background: #fbece8; padding: 4px 9px; border-radius: 999px; }
+.failure-card .failure-row { display: grid; grid-template-columns: 92px 1fr; gap: 12px; font-size: 13.5px; line-height: 1.55; }
+.failure-card .failure-row b { color: var(--muted); font-weight: 600; }
+.failure-card .failure-row span { color: #2a2a2a; }
+.failure-card .failure-row .exploit { color: #6a3a2c; }
+.why-summary { margin-top: 34px; border: 1px solid var(--line-strong); border-radius: 16px; padding: 30px 32px; background: var(--forest); color: #fff; display: grid; gap: 14px; }
+.why-summary .eyebrow { color: #a9beb5; }
+.why-summary h3 { font: 500 clamp(24px, 2.4vw, 34px)/1.05 "Fraunces", serif; letter-spacing: -.03em; margin: 0; }
+.why-summary ul { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 26px; }
+.why-summary li { display: grid; grid-template-columns: 18px 1fr; gap: 10px; font-size: 13.5px; color: #cfe0d8; line-height: 1.5; }
+.why-summary li b { color: #fff; font-weight: 600; }
+.why-summary li::before { content: "✓"; color: #8fd6b0; font-weight: 700; }
+
 /* Authentication */
 .auth-layout { min-height: 100dvh; display: grid; grid-template-columns: minmax(360px, .9fr) minmax(520px, 1.1fr); }
 .auth-story { background: var(--forest); color: #fff; padding: 42px; min-height: 100dvh; }
@@ -302,12 +322,55 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .viewer-controls a { width: 34px; display: grid; place-items: center; }
 .viewer-controls svg { width: 16px; }
 .document-canvas { position: relative; min-height: 580px; height: min(68vh, 780px); background: #e5e0d4; display: grid; place-items: center; overflow: hidden; }
-.document-canvas > img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.document-canvas > img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block; }
+.document-canvas > img.loading-hidden { opacity: 0; }
 .viewer-empty { color: var(--muted); }
-.viewer-caption { position: absolute; left: 12px; right: 12px; bottom: 12px; padding: 9px 12px; background: rgba(23,27,25,.88); color: #fff; display: flex; justify-content: space-between; gap: 12px; font-size: 9px; }
+
+/* --- Image overlay wrapper (positioned over the rendered image area) --- */
+.canvas-overlay-wrapper { position: absolute; pointer-events: none; z-index: 2; }
+
+/* --- Loading state --- */
+.canvas-loading { display: flex; flex-direction: column; align-items: center; gap: 14px; color: var(--muted); font-size: 12px; letter-spacing: .04em; }
+.canvas-spinner { width: 36px; height: 36px; border: 3px solid var(--line); border-top-color: var(--forest); border-radius: 50%; animation: canvas-spin .8s linear infinite; }
+@keyframes canvas-spin { to { transform: rotate(360deg); } }
+
+/* --- Error state --- */
+.canvas-error { display: flex; flex-direction: column; align-items: center; gap: 10px; color: #82392d; font-size: 12px; text-align: center; max-width: 280px; }
+.canvas-error svg { width: 40px; height: 40px; opacity: .6; }
+
+/* --- Flag box (tampered region) --- */
+.flag-box { position: absolute; border: 2px dashed var(--danger); background: rgba(168,69,53,.10); pointer-events: none; z-index: 5; animation: flag-pulse 2s ease-in-out infinite; box-shadow: 0 0 0 1px rgba(168,69,53,.25); }
+.flag-box span { position: absolute; top: -28px; left: -2px; background: var(--danger); color: #fff; padding: 5px 10px; font: 700 8px "JetBrains Mono", monospace; text-transform: uppercase; white-space: nowrap; border-radius: 2px; z-index: 6; }
+@keyframes flag-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(168,69,53,.25); }
+  50% { box-shadow: 0 0 0 4px rgba(168,69,53,.18), 0 0 16px rgba(168,69,53,.12); }
+}
+
+/* --- Cross-hair lines --- */
+.flag-crosshair { position: absolute; pointer-events: none; z-index: 4; }
+.flag-crosshair-h { left: 0; right: 0; height: 0; border-top: 1px dashed rgba(168,69,53,.45); }
+.flag-crosshair-v { top: 0; bottom: 0; width: 0; border-left: 1px dashed rgba(168,69,53,.45); }
+
+/* --- Connector line + annotation label --- */
+.flag-annotation { position: absolute; pointer-events: none; z-index: 6; display: flex; align-items: flex-start; gap: 0; }
+.flag-connector { width: 32px; height: 1px; background: var(--danger); flex-shrink: 0; margin-top: 7px; }
+.flag-label { background: rgba(168,69,53,.92); color: #fff; padding: 5px 10px; font: 700 8.5px "JetBrains Mono", monospace; text-transform: uppercase; white-space: nowrap; border-radius: 2px; line-height: 1.3; }
+.flag-label small { display: block; font-weight: 400; font-size: 7.5px; opacity: .8; margin-top: 2px; text-transform: none; }
+
+/* --- Saliency hotspot overlays --- */
+.hotspot-box { position: absolute; pointer-events: none; z-index: 3; border: 1.5px solid rgba(217,160,60,.7); background: rgba(217,160,60,.12); border-radius: 2px; }
+.hotspot-box span { position: absolute; bottom: -18px; left: 0; font: 700 7px "JetBrains Mono", monospace; color: rgba(217,160,60,.9); white-space: nowrap; }
+
+/* --- Clean invoice badge --- */
+.canvas-badge { position: absolute; z-index: 6; padding: 8px 16px; border-radius: 4px; font: 600 11px "JetBrains Mono", monospace; text-transform: uppercase; letter-spacing: .06em; display: flex; align-items: center; gap: 7px; pointer-events: none; }
+.canvas-badge-clean { bottom: 52px; right: 16px; background: rgba(39,100,71,.92); color: #d4f5e2; border: 1px solid rgba(39,100,71,.5); box-shadow: 0 2px 12px rgba(39,100,71,.25); }
+.canvas-badge-clean svg { width: 16px; height: 16px; }
+.canvas-badge-tampered { bottom: 52px; right: 16px; background: rgba(168,69,53,.92); color: #fde8e4; border: 1px solid rgba(168,69,53,.5); box-shadow: 0 2px 12px rgba(168,69,53,.25); }
+.canvas-badge-tampered svg { width: 16px; height: 16px; }
+
+/* --- Caption (unchanged positioning, raised z-index) --- */
+.viewer-caption { position: absolute; left: 12px; right: 12px; bottom: 12px; padding: 9px 12px; background: rgba(23,27,25,.88); color: #fff; display: flex; justify-content: space-between; gap: 12px; font-size: 9px; z-index: 7; }
 .viewer-caption code { color: #b8cbc2; }
-.flag-box { position: absolute; border: 2px solid var(--danger); background: rgba(168,69,53,.12); pointer-events: none; }
-.flag-box span { position: absolute; top: -25px; left: -2px; background: var(--danger); color: #fff; padding: 5px 8px; font: 700 8px "JetBrains Mono", monospace; text-transform: uppercase; white-space: nowrap; }
 .confidence { font-family: "JetBrains Mono", monospace; }
 .fact-grid { margin: 0; display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
 .fact-grid > div { min-height: 88px; padding: 17px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); display: grid; align-content: center; gap: 6px; }

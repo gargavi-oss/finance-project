@@ -1,6 +1,6 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { uploadDocument, streamUrl, type FullPayload } from "../lib/api";
+import { uploadDocument, streamUrl, getPayload, type FullPayload } from "../lib/api";
 import { AGENT_DISPLAY, AGENT_ORDER, fmtCurrency, severityClass } from "../lib/format";
 
 interface RunState {
@@ -20,6 +20,15 @@ export default function LiveVerification() {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const activePollRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (activePollRef.current) {
+        clearInterval(activePollRef.current);
+      }
+    };
+  }, []);
 
   function chooseFile(file: File) {
     if (file.size > 25 * 1024 * 1024) {
@@ -47,6 +56,10 @@ export default function LiveVerification() {
   async function startInvestigation() {
     if (!selected || uploading) return;
     setUploading(true);
+    if (activePollRef.current) {
+      clearInterval(activePollRef.current);
+      activePollRef.current = null;
+    }
     try {
       const { document_id } = await uploadDocument(selected);
       setRun({
@@ -58,20 +71,62 @@ export default function LiveVerification() {
         log: [{ ts: Date.now(), agent: "system", msg: `Case ${document_id} accepted` }],
         complete: false,
       });
+
+      let finished = false;
+      const cleanup = () => {
+        finished = true;
+        if (activePollRef.current) {
+          clearInterval(activePollRef.current);
+          activePollRef.current = null;
+        }
+      };
+
       const source = new EventSource(streamUrl(document_id));
       source.onmessage = (event) => {
         try {
           const parsed = JSON.parse(event.data);
           updateFromEvent(parsed, setRun);
-          if (parsed.event === "pipeline_done") source.close();
+          if (parsed.event === "pipeline_done") {
+            cleanup();
+            source.close();
+          }
         } catch {
-          setRun((previous) => previous ? { ...previous, error: "The evidence stream returned an unreadable event." } : previous);
+          // If SSE event is malformed, polling will still recover state
         }
       };
+
       source.onerror = () => {
         source.close();
-        setRun((previous) => previous?.complete ? previous : previous ? { ...previous, error: "Live stream disconnected. The report can still be opened when processing completes." } : previous);
+        // Do not fail immediately: polling fallback will retrieve complete dossier from DB
       };
+
+      // Resilient fallback: poll /payload every 1 second until verdict is settled
+      activePollRef.current = window.setInterval(async () => {
+        if (finished) return;
+        try {
+          const res = await getPayload(document_id);
+          if (res.payload) {
+            const p = res.payload;
+            const isComplete = !!p.verdict || Object.keys(p.errors ?? {}).length > 0;
+            setRun((prev) => {
+              if (!prev || prev.complete) return prev;
+              return {
+                ...prev,
+                payload: p,
+                agentStatus: { ...prev.agentStatus, ...(p.agent_status ?? {}) },
+                complete: isComplete,
+              };
+            });
+            if (isComplete) {
+              cleanup();
+              source.close();
+            }
+          }
+        } catch {
+          // Ignore transient poll fetch errors while server processes
+        }
+      }, 1000);
+
     } catch (error) {
       setRun({ documentId: "", filename: selected.name, sizeLabel: formatSize(selected.size), payload: null, agentStatus: {}, log: [], complete: false, error: error instanceof Error ? error.message : "Upload failed." });
     } finally {

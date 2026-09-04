@@ -55,3 +55,11 @@ date. Requests older than 90 days are automatically rejected.
 Invoice totals that are perfect round numbers (e.g. exactly $1,000.00 or
 $2,500.00) on otherwise itemised invoices are flagged for additional review.
 Round-number fabrication is one of the most common document-fraud patterns.
+
+## [EXP-009] Weekend submissions
+
+Expenses and invoices dated or submitted on weekends (Saturdays or Sundays) are prohibited from automatic approval and require written business justification and managerial review.
+
+## [EXP-010] Threshold spikes
+
+Submissions with significant dollar spikes above standard departmental limits (above $2,500 USD) must undergo secondary fraud and threshold compliance review before payment release.

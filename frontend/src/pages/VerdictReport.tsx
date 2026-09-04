@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import {
   fileUrl,
-  streamUrl,
   documentFileUrl,
   getDocument,
   getPayload,
@@ -11,6 +10,7 @@ import {
   postDecision,
   type DocumentRecord,
   type FullPayload,
+  type TamperHotspot,
 } from "../lib/api";
 import {
   AGENT_DISPLAY,
@@ -386,8 +386,8 @@ export default function VerdictReport() {
                           : ""
                       }
                       disabled={
-                        !payload.forensics
-                          ?.ela_overlay_path
+                        !payload.forensics?.ela_overlay_path &&
+                        !document.ela_overlay_path
                       }
                       onClick={() =>
                         setPreviewMode("ela")
@@ -395,15 +395,15 @@ export default function VerdictReport() {
                     >
                       ELA map
                     </button>
-<a
-  href={documentFileUrl(document.id)}
-  download={document.filename}
-  target="_blank"
-  rel="noreferrer"
-  aria-label="Open source document"
->
-  <DownloadIcon />
-</a>
+                    <a
+                      href={`${documentFileUrl(document.id)}?download=true`}
+                      download={document.filename}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="Open source document"
+                    >
+                      <DownloadIcon />
+                    </a>
                   </div>
                 </div>
 
@@ -720,9 +720,9 @@ function DocumentViewer({
   // /file returns the actual uploaded document.
   const source = documentFileUrl(document.id);
 
-  const overlay = payload.forensics?.ela_overlay_path
-    ? fileUrl(payload.forensics.ela_overlay_path)
-    : null;
+  const overlayPath =
+    payload.forensics?.ela_overlay_path || document.ela_overlay_path;
+  const overlay = overlayPath ? fileUrl(overlayPath) : null;
 
   const shown =
     mode === "ela" && overlay
@@ -730,25 +730,107 @@ function DocumentViewer({
       : source;
 
   const region = payload.forensics?.flagged_region;
+  const saliencyHotspots: TamperHotspot[] = payload.forensics?.saliency?.hotspots ?? [];
+  const compositeScore = payload.forensics?.composite_score ?? 0;
+
+  // --- Image loading / error state ---
+  const [imgState, setImgState] = useState<"loading" | "loaded" | "error">("loading");
+
+  // --- Track rendered image rect for overlay positioning ---
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [naturalW, setNaturalW] = useState(0);
+  const [naturalH, setNaturalH] = useState(0);
+  const [imgRect, setImgRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+
+  // Reset loading state when the image URL changes.
+  useEffect(() => {
+    setImgState("loading");
+  }, [shown]);
+
+  // Measure the rendered image rect within the canvas (object-fit: contain
+  // centers the image, so its rendered area != the container).
+  const measure = useCallback(() => {
+    const canvas = canvasRef.current;
+    const img = imgRef.current;
+    if (!canvas || !img || !img.naturalWidth) return;
+
+    const cRect = canvas.getBoundingClientRect();
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    setNaturalW(nw);
+    setNaturalH(nh);
+
+    // Compute the rendered image area when object-fit: contain is used.
+    const scale = Math.min(cRect.width / nw, cRect.height / nh);
+    const rw = nw * scale;
+    const rh = nh * scale;
+    const rl = (cRect.width - rw) / 2;
+    const rt = (cRect.height - rh) / 2;
+    setImgRect({ left: rl, top: rt, width: rw, height: rh });
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [measure]);
+
+  const handleLoad = useCallback(() => {
+    setImgState("loaded");
+    measure();
+  }, [measure]);
+
+  const handleError = useCallback(() => {
+    console.error("Document image failed to load:", shown);
+    setImgState("error");
+  }, [shown]);
+
+  // --- Helper: convert pixel coords to overlay percentages ---
+  function pxToOverlay(px: number, axis: "x" | "y"): number {
+    if (!naturalW || !naturalH) return 0;
+    return axis === "x"
+      ? (px / naturalW) * 100
+      : (px / naturalH) * 100;
+  }
+
+  const isClean = !region && compositeScore < 0.4;
+  const isTampered = !!region || compositeScore >= 0.4;
 
   return (
-    <div className="document-canvas">
+    <div className="document-canvas" ref={canvasRef}>
+      {/* Loading state */}
+      {imgState === "loading" && shown && (
+        <div className="canvas-loading">
+          <div className="canvas-spinner" />
+          <span>Loading document…</span>
+        </div>
+      )}
+
+      {/* Error state */}
+      {imgState === "error" && (
+        <div className="canvas-error">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M15 9l-6 6M9 9l6 6" />
+          </svg>
+          <span>Document preview could not be loaded.</span>
+          <span style={{ fontSize: 10, opacity: 0.7 }}>The file may still be processing.</span>
+        </div>
+      )}
+
+      {/* The actual image */}
       {shown ? (
         <img
+          ref={imgRef}
           src={shown}
+          className={imgState === "loading" ? "loading-hidden" : ""}
           alt={
             mode === "ela"
               ? "Error level analysis map"
               : `Original ${document.filename}`
           }
-          onError={(event) => {
-            console.error(
-              "Document image failed to load:",
-              shown,
-            );
-
-            event.currentTarget.style.display = "none";
-          }}
+          onLoad={handleLoad}
+          onError={handleError}
         />
       ) : (
         <div className="viewer-empty">
@@ -756,17 +838,109 @@ function DocumentViewer({
         </div>
       )}
 
-      {mode === "source" && region && (
+      {/* --- Overlays (only when image is loaded and measured) --- */}
+      {imgState === "loaded" && imgRect && (
         <div
-          className="flag-box"
+          className="canvas-overlay-wrapper"
           style={{
-            left: `${region.x / 12.4}%`,
-            top: `${region.y / 17.54}%`,
-            width: `${region.width / 12.4}%`,
-            height: `${region.height / 17.54}%`,
+            left: imgRect.left,
+            top: imgRect.top,
+            width: imgRect.width,
+            height: imgRect.height,
           }}
         >
-          <span>Flagged region</span>
+          {/* Flagged region with cross-hair lines */}
+          {(mode === "source" || mode === "ela") && region && naturalW > 0 && naturalH > 0 && (
+            <>
+              {/* Cross-hair horizontal lines (top and bottom of region) */}
+              <div
+                className="flag-crosshair flag-crosshair-h"
+                style={{ top: `${pxToOverlay(region.y, "y")}%` }}
+              />
+              <div
+                className="flag-crosshair flag-crosshair-h"
+                style={{ top: `${pxToOverlay(region.y + region.height, "y")}%` }}
+              />
+
+              {/* Cross-hair vertical lines (left and right of region) */}
+              <div
+                className="flag-crosshair flag-crosshair-v"
+                style={{ left: `${pxToOverlay(region.x, "x")}%` }}
+              />
+              <div
+                className="flag-crosshair flag-crosshair-v"
+                style={{ left: `${pxToOverlay(region.x + region.width, "x")}%` }}
+              />
+
+              {/* The flag box itself */}
+              <div
+                className="flag-box"
+                style={{
+                  left: `${pxToOverlay(region.x, "x")}%`,
+                  top: `${pxToOverlay(region.y, "y")}%`,
+                  width: `${pxToOverlay(region.width, "x")}%`,
+                  height: `${pxToOverlay(region.height, "y")}%`,
+                }}
+              >
+                <span>Flagged region</span>
+              </div>
+
+              {/* Annotation label connected by a line */}
+              <div
+                className="flag-annotation"
+                style={{
+                  left: `${pxToOverlay(region.x + region.width, "x")}%`,
+                  top: `${pxToOverlay(region.y + region.height / 2, "y")}%`,
+                }}
+              >
+                <div className="flag-connector" />
+                <div className="flag-label">
+                  Tampering detected
+                  <small>
+                    {region.width}×{region.height}px · ELA hotspot
+                  </small>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Saliency hotspot overlays (amber boxes) */}
+          {(mode === "source" || mode === "ela") && saliencyHotspots.length > 0 && naturalW > 0 && naturalH > 0 &&
+            saliencyHotspots.slice(0, 5).map((hotspot, idx) => (
+              <div
+                key={`hotspot-${idx}`}
+                className="hotspot-box"
+                style={{
+                  left: `${pxToOverlay(hotspot.box.x, "x")}%`,
+                  top: `${pxToOverlay(hotspot.box.y, "y")}%`,
+                  width: `${pxToOverlay(hotspot.box.width, "x")}%`,
+                  height: `${pxToOverlay(hotspot.box.height, "y")}%`,
+                  opacity: 0.5 + hotspot.intensity * 0.5,
+                }}
+              >
+                <span>#{hotspot.rank} · {Math.round(hotspot.intensity * 100)}%</span>
+              </div>
+            ))
+          }
+        </div>
+      )}
+
+      {/* Canvas badge: clean or tampered */}
+      {imgState === "loaded" && mode === "source" && isClean && (
+        <div className="canvas-badge canvas-badge-clean">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <path d="M5 13l4 4L19 7" />
+          </svg>
+          No tampering detected
+        </div>
+      )}
+
+      {imgState === "loaded" && mode === "source" && isTampered && region && (
+        <div className="canvas-badge canvas-badge-tampered">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 9v4M12 17h.01M12 2L2 22h20L12 2z" />
+          </svg>
+          Tampering flagged · Score {Math.round(compositeScore * 100)}%
         </div>
       )}
 
@@ -1242,11 +1416,22 @@ function headlineFor(score: number) {
 }
 
 function cleanSummary(summary: string) {
+  if (!summary) {
+    return "The evidence agents completed their review and produced the findings below.";
+  }
+
+  let cleaned = summary
+    // Strip [demo LLM] prefix.
+    .replace(/^\[demo LLM\]\s*/i, "")
+    // Strip System / User prompt scaffold leakage if present
+    .replace(/^(?:System|User|Prompt):[\s\S]*?(?=(?:The analysis|Key signals|Forensic flags|All evidence|In summary|$))/im, "")
+    .replace(/Document:.*?Agent findings:[\s\S]*?(?=(?:Write a|The analysis|Key signals|Forensic flags|In summary|$))/im, "")
+    .replace(/Write a \d+-\d+ sentence[\s\S]*$/im, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
   return (
-    summary
-      .replace(/^\[demo LLM\]\s*/i, "")
-      .replace(/Document:.*?Agent findings:/s, "")
-      .trim() ||
+    cleaned ||
     "The evidence agents completed their review and produced the findings below."
   );
 }
