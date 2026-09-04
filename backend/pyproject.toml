@@ -1,0 +1,41 @@
+[project]
+name = "docforensic-ai-backend"
+version = "2.0.4"
+description = "DocForensic AI — six-agent fraud-detection pipeline for invoices and receipts (NioHack 2026 / Team Nexora)."
+readme = "../README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Core
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.32.1",
+    "python-multipart==0.0.20",
+    "pydantic==2.10.3",
+    "pydantic-settings==2.7.0",
+    # Storage
+    "SQLAlchemy==2.0.36",
+    "aiosqlite==0.20.0",
+    "greenlet>=3.0.0",
+    # OCR / Vision
+    "pytesseract==0.3.13",
+    "Pillow==11.0.0",
+    "opencv-python-headless==4.10.0.84",
+    "numpy==2.2.1",
+    "exifread==3.0.0",
+    "imagehash==4.3.1",
+    # RAG (lightweight TF-IDF)
+    "scikit-learn==1.6.1",
+    # Agent orchestration (optional — graceful fallback if absent)
+    "langgraph==0.2.60",
+    "langchain==0.3.20",
+    "langchain-core>=0.3.41,<1.0.0",
+    "langchain-openai==0.2.12",
+    # Gemini provider (primary LLM)
+    "langchain-google-genai>=0.2.0",
+    # Utilities
+    "python-dotenv==1.0.1",
+    "httpx==0.28.1",
+    "piexif==1.1.3",
+]
+
+[tool.uv]
+package = false

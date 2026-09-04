@@ -1,0 +1,43 @@
+"""Forensics Agent — ELA, EXIF/metadata, font-consistency heuristics."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from app.agents.base import BaseAgent
+from app.config import get_settings
+from app.schemas.models import AgentName, AgentStatus, PipelineState
+from app.services.forensics import run_forensics
+
+logger = logging.getLogger(__name__)
+
+
+class ForensicsAgent(BaseAgent):
+    def __init__(self) -> None:
+        super().__init__(AgentName.FORENSICS)
+
+    async def run(self, state: PipelineState) -> PipelineState:
+        self._mark(state, AgentStatus.RUNNING)
+        try:
+            settings = get_settings()
+            overlay_dir = Path(settings.data_dir) / "overlays"
+            result = run_forensics(
+                state.image_path,
+                overlay_dir=overlay_dir,
+                ela_threshold=settings.ela_tamper_threshold,
+                meta_threshold=settings.meta_anomaly_threshold,
+                font_threshold=settings.font_inconsistency_threshold,
+            )
+            state.forensics = result
+            if result.composite_score >= 0.7:
+                self._mark(state, AgentStatus.HIGH)
+            elif result.composite_score >= 0.4:
+                self._mark(state, AgentStatus.REVIEW)
+            else:
+                self._mark(state, AgentStatus.PASSED)
+        except Exception as exc:
+            logger.exception("forensics failed")
+            state.errors[self.name.value] = str(exc)
+            self._mark(state, AgentStatus.ERROR)
+        return state

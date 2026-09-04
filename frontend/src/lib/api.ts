@@ -1,0 +1,253 @@
+
+
+const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
+export class ApiError extends Error {
+  constructor(public status: number, public detail: string) {
+    super(detail);
+    this.name = "ApiError";
+  }
+}
+
+export interface AuthUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+}
+
+export interface AgentStatus {
+  // free-form string coming from the backend
+  [k: string]: string;
+}
+
+export interface DocumentRecord {
+  id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  perceptual_hash: string;
+  image_path: string;
+  ela_overlay_path: string | null;
+  vendor: string | null;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  total_amount: number | null;
+  decision: "approved" | "escalated" | "rejected" | "pending";
+  risk_score: number | null;
+  summary: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+  reviewer_notes: string | null;
+}
+
+export interface FullPayload {
+  extraction: Extraction | null;
+  forensics: Forensics | null;
+  policy: Policy | null;
+  history: History | null;
+  ring: Ring | null;
+  verdict: Verdict | null;
+  agent_status: Record<string, string>;
+  errors: Record<string, string>;
+}
+
+export interface Extraction {
+  vendor: string | null;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  total_amount: number | null;
+  currency: string;
+  line_items: Array<{ description: string; quantity: number; unit_price: number; amount: number }>;
+  raw_text: string;
+  ocr_engine: string;
+  confidence: number;
+}
+
+export interface Forensics {
+  ela_score: number;
+  ela_suspicious_ratio: number;
+  ela_overlay_path: string | null;
+  flagged_region: { x: number; y: number; width: number; height: number } | null;
+  metadata_signals: Record<string, unknown>;
+  metadata_score: number;
+  font_inconsistency_score: number;
+  composite_score: number;
+  flags: Array<{ code: string; label: string; severity: string; detail: string; score: number }>;
+  perceptual_hash: string;
+}
+
+export interface Policy {
+  score: number;
+  violated_clauses: Array<{ clause_id: string; clause_title: string; snippet: string; relevance: number }>;
+  rationale: string;
+}
+
+export interface History {
+  score: number;
+  vendor_prior_submissions: number;
+  vendor_avg_amount: number;
+  vendor_max_amount: number;
+  vendor_stddev: number;
+  flags: Array<{ code: string; label: string; severity: string; detail: string; score: number }>;
+}
+
+export interface Ring {
+  score: number;
+  matches: Array<{
+    matched_document_id: string;
+    matched_filename: string;
+    hamming_distance: number;
+    matched_at: string;
+    matched_vendor: string | null;
+  }>;
+  total_indexed: number;
+}
+
+export interface Verdict {
+  risk_score: number;
+  recommendation: "approved" | "escalated" | "rejected" | "pending";
+  summary: string;
+  findings: Array<{
+    agent: string;
+    status: string;
+    score: number;
+    headline: string;
+    detail: string;
+  }>;
+}
+
+export interface AuditEntry {
+  id: number;
+  document_id: string;
+  filename: string;
+  action: "approved" | "escalated" | "rejected";
+  actor: string;
+  notes: string | null;
+  created_at: string;
+}
+
+// --------------------------------------------------------------------------- //
+// Helpers
+// --------------------------------------------------------------------------- //
+
+async function jsonOrThrow<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const body = await res.json().catch(() => null) as { detail?: string } | null;
+    throw new ApiError(res.status, body?.detail ?? `Request failed (${res.status})`);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+const withCredentials: RequestInit = { credentials: "include" };
+
+export async function authMe(): Promise<AuthUser> {
+  return jsonOrThrow(await fetch(`${BASE}/api/auth/me`, withCredentials));
+}
+
+export async function login(email: string, password: string): Promise<AuthUser> {
+  return jsonOrThrow(await fetch(`${BASE}/api/auth/login`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  }));
+}
+
+export async function signup(name: string, email: string, password: string): Promise<AuthUser> {
+  return jsonOrThrow(await fetch(`${BASE}/api/auth/signup`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, email, password }),
+  }));
+}
+
+export async function logout(): Promise<void> {
+  await jsonOrThrow<void>(await fetch(`${BASE}/api/auth/logout`, {
+    method: "POST",
+    credentials: "include",
+  }));
+}
+
+export async function uploadDocument(file: File): Promise<{ document_id: string; status_url: string; stream_url: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${BASE}/api/documents`, { method: "POST", body: form });
+  return jsonOrThrow(res);
+}
+
+export async function listDocuments(): Promise<DocumentRecord[]> {
+  return jsonOrThrow(await fetch(`${BASE}/api/documents`));
+}
+
+export async function getDocument(id: string): Promise<DocumentRecord> {
+  return jsonOrThrow(await fetch(`${BASE}/api/documents/${id}`));
+}
+
+export async function getPayload(id: string): Promise<{ status: string; payload: FullPayload | null }> {
+  return jsonOrThrow(await fetch(`${BASE}/api/documents/${id}/payload`));
+}
+
+export async function postDecision(id: string, body: { action: string; actor?: string; notes?: string }): Promise<{ ok: boolean; audit: AuditEntry }> {
+  return jsonOrThrow(
+    await fetch(`${BASE}/api/documents/${id}/decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function listAudit(): Promise<AuditEntry[]> {
+  return jsonOrThrow(await fetch(`${BASE}/api/audit`));
+}
+
+export async function listRings(): Promise<Array<{ id: string; filename: string; vendor: string | null; created_at: string; perceptual_hash: string }>> {
+  return jsonOrThrow(await fetch(`${BASE}/api/rings`));
+}
+
+export async function getHealth(): Promise<{
+  status: string;
+  version: string;
+  llm_provider: string;
+  llm_model: string | null;
+  tesseract: boolean;
+  policy_path: string;
+}> {
+  return jsonOrThrow(await fetch(`${BASE}/api/health`));
+}
+
+
+export function streamUrl(id: string): string {
+  return `${BASE}/api/documents/${id}/stream`;
+}
+
+export function documentFileUrl(id: string): string {
+  return `${BASE}/api/documents/${id}/file`;
+}
+
+export function fileUrl(
+  path: string | null | undefined,
+): string | null {
+  if (!path) return null;
+
+  if (
+    path.startsWith("http://") ||
+    path.startsWith("https://")
+  ) {
+    return path;
+  }
+
+  const marker = "/data/";
+  const idx = path.lastIndexOf(marker);
+
+  const relativePath =
+    idx >= 0
+      ? path.slice(idx)
+      : `/data/${path.replace(/^\/+/, "")}`;
+
+  return `${BASE}${relativePath}`;
+}

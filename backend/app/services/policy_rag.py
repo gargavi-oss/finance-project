@@ -1,0 +1,198 @@
+"""Expense-policy RAG service.
+
+Uses TF-IDF over the policy document plus a small set of curated Q&A clauses.
+This is intentionally lightweight: in a production deployment the same call
+signature would talk to a real vector store (pgvector / Pinecone). For an
+on-prem demo it boots instantly with no extra dependencies.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+from app.schemas.models import (
+    ExtractionResult,
+    PolicyCitation,
+    PolicyResult,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class PolicyRAG:
+    """A tiny TF-IDF retriever over the company expense policy."""
+
+    def __init__(self, policy_path: str | Path) -> None:
+        self.policy_path = Path(policy_path)
+        self._clauses: list[dict] = []
+        self._vectorizer: Optional[TfidfVectorizer] = None
+        self._matrix = None
+        self.reload()
+
+    # ---- public --------------------------------------------------------- #
+
+    def reload(self) -> None:
+        if not self.policy_path.exists():
+            logger.warning("policy file missing at %s — RAG will be inert", self.policy_path)
+            self._clauses = []
+            self._vectorizer = None
+            self._matrix = None
+            return
+        text = self.policy_path.read_text(encoding="utf-8")
+        clauses = _split_clauses(text)
+        self._clauses = clauses
+        if not clauses:
+            self._vectorizer = None
+            self._matrix = None
+            return
+        corpus = [c["text"] for c in clauses]
+        self._vectorizer = TfidfVectorizer(
+            ngram_range=(1, 2),
+            stop_words="english",
+            lowercase=True,
+        )
+        self._matrix = self._vectorizer.fit_transform(corpus)
+
+    def check(self, extraction: ExtractionResult) -> PolicyResult:
+        if not self._clauses or self._vectorizer is None or self._matrix is None:
+            return PolicyResult(
+                score=0.0,
+                rationale="policy document unavailable",
+            )
+
+        query = _extraction_to_query(extraction)
+        query_vec = self._vectorizer.transform([query])
+        sims = cosine_similarity(query_vec, self._matrix).ravel()
+        top_idx = np.argsort(-sims)[:3]
+
+        violated: list[PolicyCitation] = []
+        risk = 0.0
+        rationale_bits: list[str] = []
+
+        for idx in top_idx:
+            score = float(sims[idx])
+            if score < 0.05:
+                continue
+            clause = self._clauses[int(idx)]
+            violated_severity, reason = _violation_reason(clause, extraction)
+            if violated_severity:
+                snippet = clause["text"][:240]
+                violated.append(
+                    PolicyCitation(
+                        clause_id=clause["id"],
+                        clause_title=clause["title"],
+                        snippet=snippet,
+                        relevance=round(score, 3),
+                    )
+                )
+                risk = max(risk, _severity_to_risk(violated_severity, score))
+                rationale_bits.append(f"{clause['id']}: {reason}")
+
+        rationale = "; ".join(rationale_bits) or "no policy violations detected"
+        return PolicyResult(
+            score=float(min(1.0, risk)),
+            violated_clauses=violated,
+            rationale=rationale,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+
+_CLAUSE_RE = re.compile(r"^(#{2,3})\s+(\[(?P<id>[A-Z0-9-]+)\]\s*)?(?P<title>.+?)\s*$", re.MULTILINE)
+
+
+def _split_clauses(text: str) -> list[dict]:
+    """Split a markdown document into clause chunks by ## headings."""
+    chunks: list[dict] = []
+    lines = text.splitlines()
+    current: dict | None = None
+    buffer: list[str] = []
+    for line in lines:
+        m = _CLAUSE_RE.match(line)
+        if m and m.group(1).startswith("##"):
+            if current is not None:
+                current["text"] = "\n".join(buffer).strip()
+                if current["text"]:
+                    chunks.append(current)
+            current = {
+                "id": (m.group("id") or _slug(m.group("title"))).strip(),
+                "title": m.group("title").strip(),
+            }
+            buffer = []
+        else:
+            if current is not None:
+                buffer.append(line)
+    if current is not None:
+        current["text"] = "\n".join(buffer).strip()
+        if current["text"]:
+            chunks.append(current)
+    if chunks:
+        return chunks
+    # Fallback: treat whole file as one clause.
+    return [{"id": "POLICY", "title": "Expense Policy", "text": text.strip()}]
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "-", s.upper()).strip("-")
+
+
+def _extraction_to_query(ext: ExtractionResult) -> str:
+    parts = [ext.vendor or "", ext.invoice_number or "", ext.invoice_date or ""]
+    if ext.total_amount is not None:
+        parts.append(f"amount {ext.total_amount:.2f}")
+    for li in ext.line_items:
+        parts.append(li.description)
+    return " ".join(parts)
+
+
+def _violation_reason(clause: dict, ext: ExtractionResult) -> tuple[Optional[str], str]:
+    """Return (severity, reason) if the extracted doc violates this clause."""
+    title_low = clause["title"].lower()
+    text_low = clause["text"].lower()
+
+    amount = ext.total_amount or 0.0
+    if "auto-approval" in title_low or "approval threshold" in title_low:
+        m = re.search(r"\$?\s*([0-9,]+)", clause["text"])
+        if m:
+            threshold = float(m.group(1).replace(",", ""))
+            if amount > threshold:
+                return ("high", f"amount ${amount:,.2f} exceeds auto-approval ${threshold:,.0f}")
+        return (None, "")
+
+    if "receipt" in title_low and ("required" in title_low or "receipts" in title_low):
+        # No flag if we got here (we have an upload); but if total > some
+        # threshold and no items, note that.
+        if amount > 75 and not ext.line_items:
+            return ("medium", "no line items provided for amount above $75")
+        return (None, "")
+
+    if "vendor" in title_low and "approval" in text_low:
+        # Heuristic: if the same vendor appears 4+ times in our DB we know;
+        # this layer has no DB access, so just report a soft signal.
+        if ext.vendor and "unknown" in ext.vendor.lower():
+            return ("medium", f"vendor '{ext.vendor}' is not on approved list")
+        return (None, "")
+
+    if "duplicate" in title_low or "duplicate" in text_low:
+        # Cross-document dedup is handled by the Ring-Detection agent. We
+        # still return a low-severity note if the amount is suspiciously round.
+        if amount > 0 and amount == round(amount, -2):
+            return ("low", "amount is a round number — possible fabricated total")
+        return (None, "")
+
+    return (None, "")
+
+
+def _severity_to_risk(severity: str, relevance: float) -> float:
+    base = {"high": 0.85, "medium": 0.55, "low": 0.25}.get(severity, 0.0)
+    return base * max(0.4, relevance)

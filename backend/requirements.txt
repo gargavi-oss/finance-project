@@ -1,0 +1,33 @@
+
+## Core
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.20
+pydantic==2.10.3
+pydantic-settings==2.7.0
+
+## Storage
+SQLAlchemy==2.0.36
+aiosqlite==0.20.0
+
+## OCR / Vision
+pytesseract==0.3.13
+Pillow==11.0.0
+opencv-python-headless==4.10.0.84
+numpy==2.2.1
+exifread==3.0.0
+imagehash==4.3.1
+
+## RAG (lightweight)
+scikit-learn==1.6.1     # TF-IDF + cosine similarity for policy RAG
+
+## Agent orchestration
+langgraph==0.2.60
+langchain==0.3.20
+langchain-core==0.3.40
+langchain-openai==0.2.12  # only used if OPENAI_API_KEY is set
+
+## Utilities
+python-dotenv==1.0.1
+httpx==0.28.1
+piexif==1.1.3

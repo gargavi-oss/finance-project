@@ -1,0 +1,23 @@
+# Backend
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Generated data (uncomment to keep clean checkout)
+# backend/data/uploads/
+# backend/data/overlays/
+# backend/data/docforensic.db
+
+# Frontend
+node_modules/
+dist/
+.vite/
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
