@@ -1,4 +1,4 @@
-# DocForensic AI — Nexora / NioHack 2026
+# DocForensic AI — Nexora / NioHack 2026 
 
 > Six-agent fraud-detection pipeline for invoices and receipts.
 > Upload → in under 10 seconds, fully-explained risk verdict.
