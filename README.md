@@ -249,8 +249,7 @@ A few decisions worth pointing out for the demo:
   they're processed. For >100k docs you'd switch to a real ANN index
   (FAISS / pgvector) — the call signature is one-line.
 * **Frontend is dark-theme by default with orange/red accent** to match the
-  designed UI from the proposal. No external icon library — every glyph is
-  hand-drawn SVG to keep the bundle small.
+  designed UI from the proposal.
 * **Completeness / validity is a primary signal, not just one of six.** A total
   that does not reconcile with its own line items (the classic "edit the number
   and re-export" forgery) is, by itself, high-confidence tamper evidence, so the
